@@ -1,10 +1,10 @@
 # Chromium Playbook
 
-This Ansible playbook will launch an EC2 `c6a.12xlarge` Spot Instance and compile Chromium statically.
+This Ansible playbook will launch an EC2 `c8id.8xlarge` Spot Instance and compile Chromium statically.
 
-Once the compilation finishes, the binary will be compressed with Brotli and downloaded.
+Once the compilation finishes, the binary will be compressed with Brotli and put in an S3 bucket.
 
-The whole process usually takes around 1 hour to on a `c6a.12xlarge` instance.
+The whole process usually takes approximately 5 hours on a `c8id.8xlarge` instance.
 
 ## Chromium Version
 
