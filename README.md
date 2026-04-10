@@ -216,6 +216,85 @@ const browser = await puppeteer.launch({
 });
 ```
 
+### macOS and Playwright
+
+The Chromium binary included in this package is compiled for **Linux only** and will not work on macOS or Windows. For local development:
+
+**With Puppeteer:**
+Set the `IS_LOCAL` environment variable and install Chrome or Chromium locally. The code example above demonstrates this pattern.
+
+**With Playwright:**
+Install a local Chromium using Playwright's CLI, then configure your code to use it in local development:
+
+```typescript
+import chromium from "@sparticuz/chromium";
+import { chromium as playwright } from "playwright-core";
+
+const isLocal = process.env.IS_LOCAL;
+
+const browser = await playwright.launch({
+  args: isLocal ? [] : chromium.args,
+  executablePath:
+    isLocal ?
+      "/path/to/local/chromium" // e.g., from `npx playwright install chromium`
+    : await chromium.executablePath(),
+  headless: true,
+});
+```
+
+To install Chromium locally via Playwright:
+
+```bash
+npx playwright install chromium
+```
+
+## Bundler Configuration
+
+When using a bundler (esbuild, webpack, rollup, etc.), `@sparticuz/chromium` must be marked as **external**. The package relies on relative path resolution to locate its binary files, which breaks when bundled.
+
+<details>
+<summary>esbuild</summary>
+
+```bash
+esbuild --bundle --external:@sparticuz/chromium index.js
+```
+
+Or if you want to externalize all packages:
+
+```bash
+esbuild --bundle --packages=external index.js
+```
+
+</details>
+
+<details>
+<summary>webpack</summary>
+
+```javascript
+// webpack.config.js
+module.exports = {
+  externals: ["@sparticuz/chromium"],
+  // ... rest of config
+};
+```
+
+</details>
+
+<details>
+<summary>Serverless Framework (with serverless-esbuild)</summary>
+
+```yaml
+# serverless.yml
+custom:
+  esbuild:
+    external:
+      - "@sparticuz/chromium"
+```
+
+</details>
+
+If you see the error `The input directory "/var/task/bin" does not exist`, this almost certainly means the package was not externalized in your bundler configuration.
+
 ## Frequently Asked Questions
 
 ### Can I use ARM or Graviton instances?
@@ -297,6 +376,37 @@ index b42c740..49111d7 100644
 Yes, you will need to write your own Brotli extraction algorithm and args inclusion. (Basically, rewrite the typescript files). The binaries, once extracted, will work with any language.
 
 - C Sharp: https://github.com/Podginator/lambda-chromium-playwright-CSharp/tree/main
+
+<details>
+<summary>Playwright: Lambda /tmp fills up after repeated invocations</summary>
+
+Playwright does not automatically clean up its user data directory between invocations on a warm Lambda. Over time, `/tmp` fills up and you'll see `ERR_INSUFFICIENT_RESOURCES` errors.
+
+**Workaround:** Set a unique `--user-data-dir` for each invocation and clean it up afterward:
+
+```typescript
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+
+const userDataDir = `/tmp/pw-${randomUUID()}`;
+
+const browser = await playwright.launch({
+  args: [...chromium.args, `--user-data-dir=${userDataDir}`],
+  executablePath: await chromium.executablePath(),
+  headless: true,
+});
+
+try {
+  // ... your code ...
+} finally {
+  await browser.close();
+  await rm(userDataDir, { recursive: true, force: true });
+}
+```
+
+This issue does not affect Puppeteer, which manages user data directories differently.
+
+</details>
 
 ## Fonts
 
