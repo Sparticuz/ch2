@@ -4,10 +4,13 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    types: [labeled]
 
 jobs:
   build:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.label.name == 'binaries:available'
     name: Build Lambda Layer
     runs-on: ubuntu-latest
     permissions:
@@ -18,6 +21,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(grep -oP 'chromium_revision=\K[0-9]+' _/ansible/inventory.ini)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          mkdir -p bin/x64 bin/arm64
+
+          # Download x64 binaries
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" bin/x64/ --exclude "*.json"
+
+          # Download fonts
+          aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
+
+          # Copy x64 to bin root for tests
+          cp bin/x64/* bin/ 2>/dev/null || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -46,6 +74,9 @@ jobs:
           path: chromium.x64.zip
 
   execute:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.label.name == 'binaries:available'
     name: Lambda (Node ${{ matrix.version }}.x)
     needs: build
     runs-on: ubuntu-latest
