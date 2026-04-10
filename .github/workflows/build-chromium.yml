@@ -1,0 +1,124 @@
+name: Build Chromium
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    name: Launch Chromium EC2 Build
+    if: github.event.label.name == 'binaries:building'
+    runs-on: ubuntu-latest
+    environment: chromium-build
+    timeout-minutes: 30
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(grep -oP 'chromium_revision=\K[0-9]+' _/ansible/inventory.ini)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+          echo "Chromium revision: ${REVISION}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible and AWS dependencies
+        run: |
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install amazon.aws
+
+      - name: Create S3 pending marker
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          DEADLINE=$(date -u -d "+8 hours" +"%Y-%m-%dT%H:%M:%SZ")
+          cat <<EOF > /tmp/pending.json
+          {
+            "revision": "${REVISION}",
+            "pr_number": ${PR_NUMBER},
+            "started_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "deadline": "${DEADLINE}",
+            "repository": "${{ github.repository }}"
+          }
+          EOF
+          aws s3 cp /tmp/pending.json "s3://${S3_BUCKET}/${REVISION}/pending.json"
+
+      - name: Launch EC2 build (fire-and-forget)
+        working-directory: _/ansible
+        env:
+          REVISION: ${{ steps.revision.outputs.revision }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ansible-playbook plays/chromium.yml -i inventory.ini \
+            --extra-vars "s3_bucket=${S3_BUCKET} revision=${REVISION} github_pat=${{ secrets.RELEASE_TOKEN }} github_repo=${{ github.repository }} pr_number=${PR_NUMBER}" &
+
+          ANSIBLE_PID=$!
+
+          # Wait for EC2 to be running (up to 10 min)
+          TIMEOUT=600
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters "Name=tag:Name,Values=Chromium" "Name=instance-state-name,Values=running" \
+              --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null || true)
+
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+              echo "EC2 instance running: ${INSTANCE_ID}"
+
+              # Update pending marker with instance ID
+              PENDING=$(aws s3 cp "s3://${S3_BUCKET}/${REVISION}/pending.json" -)
+              echo "$PENDING" | jq --arg iid "$INSTANCE_ID" '. + {instance_id: $iid}' | \
+                aws s3 cp - "s3://${S3_BUCKET}/${REVISION}/pending.json"
+              break
+            fi
+            sleep 15
+            ELAPSED=$((ELAPSED + 15))
+          done
+
+          # Fire-and-forget: let Ansible run on EC2, runner can exit
+          disown $ANSIBLE_PID || true
+          echo "EC2 build launched. Artifacts will be uploaded to s3://${S3_BUCKET}/${REVISION}/"
+
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "## Chromium Build Launched
+
+          | | Value |
+          |---|---|
+          | **Revision** | \`${{ steps.revision.outputs.revision }}\` |
+          | **S3 Location** | \`s3://${{ env.S3_BUCKET }}/${{ steps.revision.outputs.revision }}/\` |
+          | **Instance Type** | c8id.8xlarge |
+          | **Deadline** | 8 hours from now |
+
+          ### Safety Mechanisms
+          - EC2 self-destruct timer: 8 hours
+          - Ansible block/rescue: teardown runs on build failure
+          - Daily safety-net workflow: catches silent failures
+          - EC2 sends \`repository_dispatch\` on completion"
+
+      - name: Emergency teardown (on failure)
+        if: failure()
+        working-directory: _/ansible
+        run: |
+          ansible-playbook plays/teardown.yml -i inventory.ini || true
