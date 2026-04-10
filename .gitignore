@@ -2,7 +2,8 @@
 *.pem
 *.pem.pub
 *.zip
-bin/chromium-*.br
+# Binary artifacts - stored in S3, never committed to git
+*.br
 build
 coverage
 node_modules
@@ -15,3 +16,4 @@ examples/**/package-lock.json
 examples/**/.serverless
 docker
 fonts/fonts
+.env
