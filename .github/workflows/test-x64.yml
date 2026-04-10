@@ -29,7 +29,6 @@ jobs:
 
       - name: Run Source Tests
         run: npm run test:source
-        continue-on-error: true
 
       - name: "Report Coverage"
         uses: davelosert/vitest-coverage-report-action@v2
