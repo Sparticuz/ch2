@@ -1,0 +1,77 @@
+name: Build Complete
+
+on:
+  repository_dispatch:
+    types: [build-complete]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  handle:
+    name: Handle build completion
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+
+    steps:
+      - name: Parse payload
+        id: payload
+        run: |
+          echo "revision=${{ github.event.client_payload.revision }}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
+          echo "status=${{ github.event.client_payload.status }}" >> "$GITHUB_OUTPUT"
+
+      - name: Handle success
+        if: steps.payload.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
+          REVISION: ${{ steps.payload.outputs.revision }}
+        run: |
+          # Remove binaries:building, add binaries:available
+          gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/binaries:building \
+            -X DELETE || true
+          gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
+            -f "labels[]=binaries:available"
+
+          # Comment on PR
+          gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "## Build Complete
+
+          Chromium revision \`${REVISION}\` built successfully.
+          Binaries are available in S3. Tests will run automatically.
+
+          | Architecture | S3 Path |
+          |---|---|
+          | x64 | \`s3://${S3_BUCKET}/${REVISION}/x64/\` |
+          | arm64 | \`s3://${S3_BUCKET}/${REVISION}/arm64/\` |"
+
+      - name: Handle failure
+        if: steps.payload.outputs.status != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
+          REVISION: ${{ steps.payload.outputs.revision }}
+        run: |
+          # Remove binaries:building, add binaries:failed
+          gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/binaries:building \
+            -X DELETE || true
+          gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
+            -f "labels[]=binaries:failed"
+
+          gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "## Build Failed
+
+          Chromium revision \`${REVISION}\` build failed.
+          Status: \`${{ github.event.client_payload.status }}\`
+
+          Check the EC2 build logs and S3 for details."
+
+      - name: Clean up S3 pending marker
+        run: |
+          REVISION="${{ steps.payload.outputs.revision }}"
+          aws s3 rm "s3://${S3_BUCKET}/${REVISION}/pending.json" || true
