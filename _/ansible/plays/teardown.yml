@@ -1,0 +1,11 @@
+---
+# Standalone teardown playbook for emergency cleanup
+# Usage: ansible-playbook plays/teardown.yml -i inventory.ini
+# Optional: --extra-vars 'ec2_instance_ids=["i-xxxxx"]'
+- name: Teardown AWS
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Import teardown tasks
+      include_tasks: teardown-tasks.yml

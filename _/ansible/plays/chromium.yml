@@ -76,205 +76,195 @@
     PATH: "{{ ansible_env.PATH }}:/srv/source/depot_tools"
 
   tasks:
-    - name: Mount NVME drive
-      become: true
-      become_user: root
-      shell: |
-        mkfs -t ext4 -m 0 /dev/nvme1n1
-        echo "/dev/nvme1n1 /srv ext4 defaults,noatime,nofail 0 2" >> /etc/fstab
-        mount -a
+    - block:
+        - name: Mount NVME drive
+          become: true
+          become_user: root
+          shell: |
+            mkfs -t ext4 -m 0 /dev/nvme1n1
+            echo "/dev/nvme1n1 /srv ext4 defaults,noatime,nofail 0 2" >> /etc/fstab
+            mount -a
 
-    - name: Update system
-      become: true
-      become_user: root
-      shell: |
-        dnf update -y
+        - name: Update system
+          become: true
+          become_user: root
+          shell: |
+            dnf update -y
 
-    - name: Installing Packages
-      become: true
-      become_user: root
-      dnf:
-        name:
-          - "@Development Tools"
-          - alsa-lib-devel
-          - atk-devel
-          - bc
-          - bluez-libs-devel
-          - bzip2-devel
-          - cairo-devel
-          - cmake
-          - cups-devel
-          - dbus-devel
-          - dbus-glib-devel
-          - dbus-x11
-          - expat-devel
-          - glibc
-          - glibc-langpack-en
-          - gperf
-          - gtk3-devel
-          - httpd
-          - java-17-amazon-corretto
-          - libatomic
-          - libcap-devel
-          - libjpeg-devel
-          - libstdc++
-          - libXScrnSaver-devel
-          - libxkbcommon-x11-devel
-          - mod_ssl
-          - ncurses-compat-libs
-          - nspr-devel
-          - nss-devel
-          - pam-devel
-          - pciutils-devel
-          - perl
-          - php
-          - php-cli
-          - pulseaudio-libs-devel
-          - python
-          - python-psutil
-          - python-setuptools
-          - ruby
-          - xorg-x11-server-Xvfb
-          - zlib
-        state: latest
-        update_cache: true
+        - name: Installing Packages
+          become: true
+          become_user: root
+          dnf:
+            name:
+              - "@Development Tools"
+              - alsa-lib-devel
+              - atk-devel
+              - bc
+              - bluez-libs-devel
+              - bzip2-devel
+              - cairo-devel
+              - cmake
+              - cups-devel
+              - dbus-devel
+              - dbus-glib-devel
+              - dbus-x11
+              - expat-devel
+              - glibc
+              - glibc-langpack-en
+              - gperf
+              - gtk3-devel
+              - httpd
+              - java-17-amazon-corretto
+              - libatomic
+              - libcap-devel
+              - libjpeg-devel
+              - libstdc++
+              - libXScrnSaver-devel
+              - libxkbcommon-x11-devel
+              - mod_ssl
+              - ncurses-compat-libs
+              - nspr-devel
+              - nss-devel
+              - pam-devel
+              - pciutils-devel
+              - perl
+              - php
+              - php-cli
+              - pulseaudio-libs-devel
+              - python
+              - python-psutil
+              - python-setuptools
+              - ruby
+              - xorg-x11-server-Xvfb
+              - zlib
+            state: latest
+            update_cache: true
 
-    - name: Checking for Directory Structure
-      stat:
-        path: /srv/source/chromium
-      register: structure
+        - name: Checking for Directory Structure
+          stat:
+            path: /srv/source/chromium
+          register: structure
 
-    - name: Creating Directory Structure
-      become: true
-      become_user: root
-      file:
-        path: /srv/{{ item }}/chromium
-        state: directory
-        group: ec2-user
-        owner: ec2-user
-        recurse: true
-      with_items:
-        - build
-        - source
-        - lib
-      when: structure.stat.exists != true
+        - name: Creating Directory Structure
+          become: true
+          become_user: root
+          file:
+            path: /srv/{{ item }}/chromium
+            state: directory
+            group: ec2-user
+            owner: ec2-user
+            recurse: true
+          with_items:
+            - build
+            - source
+            - lib
+          when: structure.stat.exists != true
 
-    - name: Cloning Depot Tools
-      git:
-        repo: https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        dest: /srv/source/depot_tools
-        force: yes
-        update: yes
+        - name: Cloning Depot Tools
+          git:
+            repo: https://chromium.googlesource.com/chromium/tools/depot_tools.git
+            dest: /srv/source/depot_tools
+            force: yes
+            update: yes
 
-    - name: Upload .gclient
-      copy:
-        src: .gclient
-        dest: /srv/source/chromium/.gclient
-        owner: ec2-user
-        group: ec2-user
-        mode: "0664"
+        - name: Upload .gclient
+          copy:
+            src: .gclient
+            dest: /srv/source/chromium/.gclient
+            owner: ec2-user
+            group: ec2-user
+            mode: "0664"
 
-    - name: Checking for Chromium
-      stat:
-        path: /srv/source/chromium/.gclient
-      register: gclient
+        - name: Checking for Chromium
+          stat:
+            path: /srv/source/chromium/.gclient
+          register: gclient
 
-    - name: Resolving Git Commit from Chromium Revision
-      uri:
-        url: "https://cr-rev.appspot.com/_ah/api/crrev/v1/redirect/{{ chromium_revision }}"
-        return_content: yes
-      register: revision
+        - name: Resolving Git Commit from Chromium Revision
+          uri:
+            url: "https://cr-rev.appspot.com/_ah/api/crrev/v1/redirect/{{ chromium_revision }}"
+            return_content: yes
+          register: revision
 
-    - name: Parse Result
-      set_fact:
-        gitsha: "{{ revision.content | regex_search('\"git_sha\":\"([a-f0-9]+)\"', '\\1') | first }}"
+        - name: Parse Result
+          set_fact:
+            gitsha: "{{ revision.content | regex_search('\"git_sha\":\"([a-f0-9]+)\"', '\\1') | first }}"
 
-    - name: Checking Out Chromium revision
-      shell: |
-        gclient sync --force --reset --delete_unversioned_trees --revision {{ gitsha }} --with_branch_heads
-      args:
-        chdir: /srv/source/chromium
+        - name: Checking Out Chromium revision
+          shell: |
+            gclient sync --force --reset --delete_unversioned_trees --revision {{ gitsha }} --with_branch_heads
+          args:
+            chdir: /srv/source/chromium
 
-    - name: Run Chromium hooks
-      shell: |
-        gclient runhooks
-      args:
-        chdir: /srv/source/chromium
+        - name: Run Chromium hooks
+          shell: |
+            gclient runhooks
+          args:
+            chdir: /srv/source/chromium
 
-    - name: Patching Chromium
-      lineinfile:
-        path: "/srv/source/chromium/src/content/browser/{{ item.path }}"
-        line: "{{ item.line }}"
-        regexp: "{{ item.regexp }}"
-        state: present
-        backrefs: yes
-      with_items:
-        - {
-            path: "sandbox_ipc_linux.cc",
-            line: '\1PLOG(WARNING) << "poll"; failed_polls = 0;',
-            regexp: '^(\s+)PLOG[(]WARNING[)] << "poll";$',
-          }
-        - {
-            path: "renderer_host/render_process_host_impl.cc",
-            line: '\1// \2\3',
-            regexp: '^(  )(\s*)(CHECK[(]render_process_host->InSameStoragePartition[(])$',
-          }
-        - {
-            path: "renderer_host/render_process_host_impl.cc",
-            line: '\1// \2\3',
-            regexp: '^(  )(\s*)(browser_context->GetStoragePartition[(]site_instance,)$',
-          }
-        - {
-            path: "renderer_host/render_process_host_impl.cc",
-            line: '\1// \2\3',
-            regexp: '^(  )(\s*)(false /[*] can_create [*]/[)][)][)];)$',
-          }
+        - name: Patching Chromium
+          lineinfile:
+            path: "/srv/source/chromium/src/content/browser/{{ item.path }}"
+            line: "{{ item.line }}"
+            regexp: "{{ item.regexp }}"
+            state: present
+            backrefs: yes
+          with_items:
+            - {
+                path: "sandbox_ipc_linux.cc",
+                line: '\1PLOG(WARNING) << "poll"; failed_polls = 0;',
+                regexp: '^(\s+)PLOG[(]WARNING[)] << "poll";$',
+              }
+            - {
+                path: "renderer_host/render_process_host_impl.cc",
+                line: '\1// \2\3',
+                regexp: '^(  )(\s*)(CHECK[(]render_process_host->InSameStoragePartition[(])$',
+              }
+            - {
+                path: "renderer_host/render_process_host_impl.cc",
+                line: '\1// \2\3',
+                regexp: '^(  )(\s*)(browser_context->GetStoragePartition[(]site_instance,)$',
+              }
+            - {
+                path: "renderer_host/render_process_host_impl.cc",
+                line: '\1// \2\3',
+                regexp: '^(  )(\s*)(false /[*] can_create [*]/[)][)][)];)$',
+              }
 
-    - name: Creating Build Configuration Directory
-      file:
-        mode: 0755
-        path: /srv/source/chromium/src/out/Headless/{{ item }}
-        state: directory
-      with_items:
-        - x64
-        - arm64
+        - name: Creating Build Configuration Directory
+          file:
+            mode: 0755
+            path: /srv/source/chromium/src/out/Headless/{{ item }}
+            state: directory
+          with_items:
+            - x64
+            - arm64
 
-    - name: Compile and package Chromium for x64
-      include_tasks: build-x64.yml
-      when: "'x64' in archs"
+        - name: Compile and package Chromium for x64
+          include_tasks: build-x64.yml
+          when: "'x64' in archs"
 
-    - name: Compile and package Chromium for arm64
-      include_tasks: build-arm64.yml
-      when: "'arm64' in archs"
+        - name: Compile and package Chromium for arm64
+          include_tasks: build-arm64.yml
+          when: "'arm64' in archs"
+
+      rescue:
+        - name: Build failed - recording failure
+          set_fact:
+            build_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+
+        - name: Build error details
+          debug:
+            msg: "Chromium build failed. Teardown will clean up AWS resources."
 
 - name: Teardown AWS
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Terminating EC2 Instance
-      amazon.aws.ec2_instance:
-        wait: yes
-        state: absent
-        instance_ids: "{{ ec2.instance_ids }}"
-        region: "{{ aws_region }}"
-
-    - name: Deleting Security Group
-      amazon.aws.ec2_group:
-        name: Chromium
-        state: absent
-        region: "{{ aws_region }}"
-
-    - name: Deleting EC2 Key Pair
-      amazon.aws.ec2_key:
-        name: ansible
-        state: absent
-        region: "{{ aws_region }}"
-
-    - name: Deleting SSH Key
-      file:
-        path: "../{{ item }}"
-        state: absent
-      with_items:
-        - ansible.pem
-        - ansible.pem.pub
+    - name: Import teardown tasks
+      include_tasks: teardown-tasks.yml
+      vars:
+        ec2_instance_ids: "{{ ec2.instance_ids | default([]) }}"
