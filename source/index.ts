@@ -144,21 +144,6 @@ class Chromium {
      */
     input ??= getBinPath();
 
-    /**
-     * If the default bin path doesn't exist, try the Lambda layer path.
-     * This handles the case where bundlers (esbuild, webpack, etc.) relocate
-     * the output file, causing the relative ../../bin path to resolve
-     * incorrectly. In a Lambda layer, the bin directory is always at:
-     * /opt/nodejs/node_modules/@sparticuz/chromium/bin
-     */
-    if (!existsSync(input)) {
-      const lambdaLayerBinPath =
-        "/opt/nodejs/node_modules/@sparticuz/chromium/bin";
-      if (existsSync(lambdaLayerBinPath)) {
-        input = lambdaLayerBinPath;
-      }
-    }
-
     if (!existsSync(input)) {
       throw new Error(
         `The input directory "${input}" does not exist. ` +
