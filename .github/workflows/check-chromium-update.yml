@@ -33,9 +33,14 @@ jobs:
       - name: Fetch latest stable revision
         id: latest
         run: |
-          RESPONSE=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json")
-          LATEST_REVISION=$(echo "$RESPONSE" | jq -r '.channels.Stable.revision')
-          LATEST_VERSION=$(echo "$RESPONSE" | jq -r '.channels.Stable.version')
+          RESPONSE=$(curl -sf "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json")
+          LATEST_REVISION=$(echo "$RESPONSE" | jq -er '.channels.Stable.revision')
+          LATEST_VERSION=$(echo "$RESPONSE" | jq -er '.channels.Stable.version')
+
+          if [ -z "$LATEST_REVISION" ] || [ "$LATEST_REVISION" = "null" ] || [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+            echo "Failed to fetch valid stable Chromium revision/version" >&2
+            exit 1
+          fi
           echo "revision=${LATEST_REVISION}" >> "$GITHUB_OUTPUT"
           echo "version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Latest stable: Chromium ${LATEST_VERSION} (revision ${LATEST_REVISION})"
