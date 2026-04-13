@@ -65,7 +65,7 @@ jobs:
               # Terminate by tag as fallback
               aws ec2 terminate-instances --instance-ids $(
                 aws ec2 describe-instances \
-                  --filters "Name=tag:Name,Values=Chromium" "Name=instance-state-name,Values=running" \
+                  --filters "Name=tag:Name,Values=chromium-build" "Name=instance-state-name,Values=running" \
                   --query 'Reservations[].Instances[].InstanceId' --output text
               ) 2>/dev/null || true
 

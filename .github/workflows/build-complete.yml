@@ -49,7 +49,8 @@ jobs:
           | Architecture | S3 Path |
           |---|---|
           | x64 | \`s3://${S3_BUCKET}/${REVISION}/x64/\` |
-          | arm64 | \`s3://${S3_BUCKET}/${REVISION}/arm64/\` |"
+          | arm64 | \`s3://${S3_BUCKET}/${REVISION}/arm64/\` |
+          | Build Log | \`s3://${S3_BUCKET}/${REVISION}/build.log\` |"
 
       - name: Handle failure
         if: steps.payload.outputs.status != 'success'
@@ -68,8 +69,11 @@ jobs:
 
           Chromium revision \`${REVISION}\` build failed.
           Status: \`${{ github.event.client_payload.status }}\`
+          Error: \`${{ github.event.client_payload.error }}\`
 
-          Check the EC2 build logs and S3 for details."
+          Build log: \`s3://${S3_BUCKET}/${REVISION}/build.log\`
+
+          To retry, remove the \`binaries:failed\` label and re-add \`binaries:building\`."
 
       - name: Clean up S3 pending marker
         run: |
