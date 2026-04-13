@@ -4,13 +4,13 @@ on:
   push:
     branches: [master]
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   build:
     if: >-
       github.event_name == 'push' ||
-      github.event.label.name == 'binaries:available'
+      contains(github.event.pull_request.labels.*.name, 'binaries:available')
     name: Build Lambda Layer
     runs-on: ubuntu-latest
     permissions:
@@ -76,7 +76,7 @@ jobs:
   execute:
     if: >-
       github.event_name == 'push' ||
-      github.event.label.name == 'binaries:available'
+      contains(github.event.pull_request.labels.*.name, 'binaries:available')
     name: Lambda (Node ${{ matrix.version }}.x)
     needs: build
     runs-on: ubuntu-latest
