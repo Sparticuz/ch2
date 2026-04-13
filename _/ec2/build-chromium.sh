@@ -24,13 +24,13 @@ shutdown -h +480 "Build safety timeout reached (8 hours)"
 LOG="/var/log/chromium-build.log"
 exec > >(tee -a "$LOG") 2>&1
 echo "=== Chromium Build Started at $(date -u) ==="
-echo "Revision: ${CHROMIUM_REVISION}"
-echo "S3 Bucket: ${S3_BUCKET}"
-echo "PR: ${PR_NUMBER}"
+echo "Revision: ${CHROMIUM_REVISION-}"
+echo "S3 Bucket: ${S3_BUCKET-}"
+echo "PR: ${PR_NUMBER-}"
 
 # Validate required environment variables
 for VAR in CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFAULT_REGION; do
-  if [[ -z "${!VAR}" ]]; then
+  if [[ -z "${!VAR-}" ]]; then
     echo "FATAL: Required environment variable ${VAR} is empty or unset"
     exit 1
   fi

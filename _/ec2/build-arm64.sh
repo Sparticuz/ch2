@@ -29,7 +29,7 @@ brotli --best --force /srv/build/chromium/swiftshader.tar
 # Upload arm64 artifacts to S3
 echo "Uploading arm64 artifacts..."
 aws s3 cp "/srv/build/chromium/chromium-${CHROME_VERSION}.br" \
-  "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64/chromium-${CHROME_VERSION}.br"
+  "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64/chromium.br"
 aws s3 cp /srv/build/chromium/swiftshader.tar.br \
   "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64/swiftshader.tar.br"
 

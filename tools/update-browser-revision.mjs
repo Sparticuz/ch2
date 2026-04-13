@@ -33,6 +33,7 @@ async function updateRevisionFile(filePath, newRevision) {
     );
   } catch (error) {
     console.error(`Error updating revision file: ${error}`);
+    throw error;
   }
 }
 

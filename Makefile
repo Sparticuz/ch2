@@ -22,7 +22,7 @@ presource:
 	cp -R bin/$(ARCH)/* bin
 
 postsource:
-	rm bin/chromium.br bin/al2023.tar.br bin/swiftshader.tar.br
+	rm -f bin/chromium.br bin/al2023.tar.br bin/swiftshader.tar.br
 
 define build-zip
 	npm install --fund=false --package-lock=false

@@ -34,7 +34,7 @@ brotli --best --force /srv/lib/al2023.tar
 # Upload x64 artifacts to S3
 echo "Uploading x64 artifacts..."
 aws s3 cp "/srv/build/chromium/chromium-${CHROME_VERSION}.br" \
-  "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/x64/chromium-${CHROME_VERSION}.br"
+  "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/x64/chromium.br"
 aws s3 cp /srv/build/chromium/swiftshader.tar.br \
   "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/x64/swiftshader.tar.br"
 aws s3 cp /srv/lib/al2023.tar.br \
