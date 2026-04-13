@@ -63,11 +63,12 @@ jobs:
               fi
 
               # Terminate by tag as fallback
-              aws ec2 terminate-instances --instance-ids $(
-                aws ec2 describe-instances \
-                  --filters "Name=tag:Name,Values=chromium-build" "Name=instance-state-name,Values=running" \
-                  --query 'Reservations[].Instances[].InstanceId' --output text
-              ) 2>/dev/null || true
+              TAGGED_IDS=$(aws ec2 describe-instances \
+                --filters "Name=tag:Name,Values=chromium-build" "Name=instance-state-name,Values=running" \
+                --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)
+              if [ -n "$TAGGED_IDS" ]; then
+                aws ec2 terminate-instances --instance-ids $TAGGED_IDS || true
+              fi
 
               # Clean up S3
               aws s3 rm "s3://${S3_BUCKET}/${KEY}"

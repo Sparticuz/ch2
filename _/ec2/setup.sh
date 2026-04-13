@@ -61,13 +61,13 @@ REVISION_JSON=$(curl -sf "https://cr-rev.appspot.com/_ah/api/crrev/v1/redirect/$
 GIT_SHA=$(echo "$REVISION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
 echo "Git SHA: ${GIT_SHA}"
 
-cd /srv/source/chromium
+cd /srv/source/chromium || exit 1
 gclient sync --force --reset --delete_unversioned_trees \
   --revision "${GIT_SHA}" --with_branch_heads
 gclient runhooks
 
 echo "=== Setup: Apply patches ==="
-cd /srv/source/chromium/src
+cd /srv/source/chromium/src || exit 1
 
 sed -i -f "$SCRIPT_DIR/patches/sandbox-ipc-failed-polls.sed" \
   content/browser/sandbox_ipc_linux.cc
