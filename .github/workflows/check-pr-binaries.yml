@@ -22,9 +22,9 @@ jobs:
             --jq '.[].filename' | grep -c '^_/ec2/revision.txt$' || true)
 
           if [ "$CHANGED" -gt 0 ]; then
-            echo "inventory_changed=true" >> "$GITHUB_OUTPUT"
+            echo "revision_changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "inventory_changed=false" >> "$GITHUB_OUTPUT"
+            echo "revision_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Get current labels
@@ -38,8 +38,8 @@ jobs:
           echo "$LABELS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Update labels (inventory changed -> binaries:building)
-        if: steps.check.outputs.inventory_changed == 'true'
+      - name: Update labels (revision changed -> binaries:building)
+        if: steps.check.outputs.revision_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -61,8 +61,8 @@ jobs:
               -f "labels[]=binaries:building"
           fi
 
-      - name: Update labels (no inventory change -> binaries:available)
-        if: steps.check.outputs.inventory_changed == 'false'
+      - name: Update labels (revision unchanged -> binaries:available)
+        if: steps.check.outputs.revision_changed == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

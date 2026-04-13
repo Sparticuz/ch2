@@ -466,9 +466,9 @@ By default, this package uses `swiftshader`/`angle` to do CPU acceleration for W
 
 > **Note:** For security reasons, we do not accept PRs that include updated binary files. Please submit the changes to build files only, and the maintainers will compile and update the binary files.
 
-1. Run `npm run update` to update [inventory.ini](_/ansible/inventory.ini) with the latest stable version of Chromium.
+1. Run `npm run update` to update [revision.txt](_/ec2/revision.txt) with the latest stable version of Chromium.
 2. Make any necessary changes to the [build-arch.yml](_/ansible/plays/build-arch.yml) file.
-3. Make any necessary changes to [inventory.ini](_/ansible/inventory.ini).
+3. Make any necessary changes to [revision.txt](_/ec2/revision.txt).
 4. Run the appropriate command from the [Makefile](_/ansible/Makefile). Use `make build` to compile both x64 and arm64 versions.
 5. If compiling both architectures and [al2023.tar.br](bin/x64/al2023.tar.br) has been modified, update the arm64 version by running `make build-arm-libs`.
 6. Verify that the `chromium-###.#.#.#.br` files are valid.
