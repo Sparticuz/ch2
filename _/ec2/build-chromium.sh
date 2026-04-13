@@ -24,9 +24,20 @@ echo "Revision: ${CHROMIUM_REVISION}"
 echo "S3 Bucket: ${S3_BUCKET}"
 echo "PR: ${PR_NUMBER}"
 
+# Validate required environment variables
+for VAR in CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFAULT_REGION; do
+  if [[ -z "${!VAR}" ]]; then
+    echo "FATAL: Required environment variable ${VAR} is empty or unset"
+    exit 1
+  fi
+done
+[[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "FATAL: PR_NUMBER must be a number, got: ${PR_NUMBER}"; exit 1; }
+
 # Helper: notify GitHub of failure and exit
 notify_failure() {
   local MESSAGE="${1:-Build failed}"
+  # Escape for JSON: backslashes, double quotes, newlines
+  MESSAGE=$(printf '%s' "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' ' ')
   echo "FAILURE: ${MESSAGE}"
 
   # Upload failure marker to S3
@@ -42,6 +53,9 @@ EOF
 
   # Remove pending marker
   aws s3 rm "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/pending.json" || true
+
+  # Scrub secrets from build log before upload
+  sed -i "s/${GITHUB_PAT}/[REDACTED]/g" "$LOG" 2>/dev/null || true
 
   # Upload build log
   aws s3 cp "$LOG" "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.log" || true
@@ -166,6 +180,14 @@ sed -i 's|^\(  \)\(\s*\)\(false /\* can_create \*/)));\)$|  // \2\3|' \
   content/browser/renderer_host/render_process_host_impl.cc
 
 echo "Patches applied"
+
+# Verify patches took effect
+grep -q 'failed_polls = 0' content/browser/sandbox_ipc_linux.cc \
+  || notify_failure "Patch verification failed: sandbox_ipc_linux.cc — expected 'failed_polls = 0'"
+
+grep -q '// .*CHECK(render_process_host->InSameStoragePartition(' \
+  content/browser/renderer_host/render_process_host_impl.cc \
+  || notify_failure "Patch verification failed: render_process_host_impl.cc — CHECK line not commented out"
 
 # === Phase 6: Build x64 ===
 echo "=== Phase 6: Build x64 ==="
@@ -304,6 +326,9 @@ if [ -f /srv/build/chromium/fonts.tar.br ]; then
   aws s3 cp /srv/build/chromium/fonts.tar.br \
     "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/fonts.tar.br"
 fi
+
+# Scrub secrets from build log before upload
+sed -i "s/${GITHUB_PAT}/[REDACTED]/g" "$LOG" 2>/dev/null || true
 
 # Upload build log
 aws s3 cp "$LOG" "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.log" || true
