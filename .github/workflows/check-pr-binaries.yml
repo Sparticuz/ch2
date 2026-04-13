@@ -34,7 +34,9 @@ jobs:
         run: |
           LABELS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels \
             --jq '.[].name' | grep '^binaries:' || true)
-          echo "current=${LABELS}" >> "$GITHUB_OUTPUT"
+          echo "current<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LABELS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Update labels (inventory changed -> binaries:building)
         if: steps.check.outputs.inventory_changed == 'true'
@@ -44,14 +46,17 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # Remove any existing binaries:* label
-          if [ -n "$CURRENT" ] && [ "$CURRENT" != "binaries:building" ]; then
-            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${CURRENT} \
-              -X DELETE || true
-          fi
+          # Remove any existing binaries:* labels
+          while IFS= read -r LABEL; do
+            [ -z "$LABEL" ] && continue
+            if [ "$LABEL" != "binaries:building" ]; then
+              gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
+                -X DELETE || true
+            fi
+          done <<< "$CURRENT"
 
           # Add binaries:building if not already present
-          if [ "$CURRENT" != "binaries:building" ]; then
+          if ! echo "$CURRENT" | grep -qx 'binaries:building'; then
             gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
               -f "labels[]=binaries:building"
           fi
@@ -64,14 +69,17 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # Remove any non-available label
-          if [ -n "$CURRENT" ] && [ "$CURRENT" != "binaries:available" ]; then
-            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${CURRENT} \
-              -X DELETE || true
-          fi
+          # Remove any non-available binaries:* labels
+          while IFS= read -r LABEL; do
+            [ -z "$LABEL" ] && continue
+            if [ "$LABEL" != "binaries:available" ]; then
+              gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
+                -X DELETE || true
+            fi
+          done <<< "$CURRENT"
 
           # Add binaries:available if not already present
-          if [ "$CURRENT" != "binaries:available" ]; then
+          if ! echo "$CURRENT" | grep -qx 'binaries:available'; then
             gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
               -f "labels[]=binaries:available"
           fi
