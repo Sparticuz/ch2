@@ -30,7 +30,7 @@ jobs:
       - name: Get chromium revision
         id: revision
         run: |
-          REVISION=$(grep -oP 'chromium_revision=\K[0-9]+' _/ansible/inventory.ini)
+          REVISION=$(cat _/ec2/revision.txt)
           echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
 
       - name: Download binaries from S3

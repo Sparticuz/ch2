@@ -26,7 +26,7 @@ jobs:
       - name: Get current revision
         id: current
         run: |
-          CURRENT_REVISION=$(grep -oP 'chromium_revision=\K[0-9]+' _/ansible/inventory.ini)
+          CURRENT_REVISION=$(cat _/ec2/revision.txt)
           echo "revision=${CURRENT_REVISION}" >> "$GITHUB_OUTPUT"
           echo "Current revision: ${CURRENT_REVISION}"
 
@@ -74,7 +74,7 @@ jobs:
 
             ### Next Steps
 
-            1. Review the revision change in `_/ansible/inventory.ini`
+            1. Review the revision change in `_/ec2/revision.txt`
             2. Add the `binaries:building` label to trigger the EC2 build
             3. Once the build completes, binaries will be available in S3 and tests will run automatically
 

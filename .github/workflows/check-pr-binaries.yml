@@ -12,14 +12,14 @@ jobs:
     name: Check binary status
     runs-on: ubuntu-latest
     steps:
-      - name: Check if inventory.ini changed
+      - name: Check if revision.txt changed
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Get the list of changed files in this PR
           CHANGED=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files \
-            --jq '.[].filename' | grep -c '^_/ansible/inventory.ini$' || true)
+            --jq '.[].filename' | grep -c '^_/ec2/revision.txt$' || true)
 
           if [ "$CHANGED" -gt 0 ]; then
             echo "inventory_changed=true" >> "$GITHUB_OUTPUT"
