@@ -216,6 +216,85 @@ const browser = await puppeteer.launch({
 });
 ```
 
+### macOS and Playwright
+
+The Chromium binary included in this package is compiled for **Linux only** and will not work on macOS or Windows. For local development:
+
+**With Puppeteer:**
+Set the `IS_LOCAL` environment variable and install Chrome or Chromium locally. The code example above demonstrates this pattern.
+
+**With Playwright:**
+Install a local Chromium using Playwright's CLI, then configure your code to use it in local development:
+
+```typescript
+import chromium from "@sparticuz/chromium";
+import { chromium as playwright } from "playwright-core";
+
+const isLocal = process.env.IS_LOCAL;
+
+const browser = await playwright.launch({
+  args: isLocal ? [] : chromium.args,
+  executablePath:
+    isLocal ?
+      "/path/to/local/chromium" // e.g., from `npx playwright install chromium`
+    : await chromium.executablePath(),
+  headless: true,
+});
+```
+
+To install Chromium locally via Playwright:
+
+```bash
+npx playwright install chromium
+```
+
+## Bundler Configuration
+
+When using a bundler (esbuild, webpack, rollup, etc.), `@sparticuz/chromium` must be marked as **external**. The package relies on relative path resolution to locate its binary files, which breaks when bundled.
+
+<details>
+<summary>esbuild</summary>
+
+```bash
+esbuild --bundle --external:@sparticuz/chromium index.js
+```
+
+Or if you want to externalize all packages:
+
+```bash
+esbuild --bundle --packages=external index.js
+```
+
+</details>
+
+<details>
+<summary>webpack</summary>
+
+```javascript
+// webpack.config.js
+module.exports = {
+  externals: ["@sparticuz/chromium"],
+  // ... rest of config
+};
+```
+
+</details>
+
+<details>
+<summary>Serverless Framework (with serverless-esbuild)</summary>
+
+```yaml
+# serverless.yml
+custom:
+  esbuild:
+    external:
+      - "@sparticuz/chromium"
+```
+
+</details>
+
+If you see the error `The input directory "/var/task/bin" does not exist`, this almost certainly means the package was not externalized in your bundler configuration.
+
 ## Frequently Asked Questions
 
 ### Can I use ARM or Graviton instances?
@@ -275,21 +354,16 @@ recompile Chromium yourself with the following patch. You can then use that bina
 _Note_: This will increase the time required to generate a PDF.
 
 ```patch
-diff --git a/_/ansible/plays/chromium.yml b/_/ansible/plays/chromium.yml
-index b42c740..49111d7 100644
---- a/_/ansible/plays/chromium.yml
-+++ b/_/ansible/plays/chromium.yml
-@@ -249,8 +249,9 @@
-           blink_symbol_level = 0
-           dcheck_always_on = false
-           disable_histogram_support = false
--          enable_basic_print_dialog = false
-           enable_basic_printing = true
-+          enable_pdf = true
-+          enable_tagged_pdf = true
-           enable_keystone_registration_framework = false
-           enable_linux_installer = false
-           enable_media_remoting = false
+diff --git a/_/ec2/args-x64.gn b/_/ec2/args-x64.gn
+--- a/_/ec2/args-x64.gn
++++ b/_/ec2/args-x64.gn
+@@ -6,7 +6,9 @@
+ disable_histogram_support = false
+-enable_basic_print_dialog = false
+ enable_basic_printing = true
++enable_pdf = true
++enable_tagged_pdf = true
+ enable_keystone_registration_framework = false
 ```
 
 ### Can I use a language other than Javascript (NodeJS)?
@@ -297,6 +371,37 @@ index b42c740..49111d7 100644
 Yes, you will need to write your own Brotli extraction algorithm and args inclusion. (Basically, rewrite the typescript files). The binaries, once extracted, will work with any language.
 
 - C Sharp: https://github.com/Podginator/lambda-chromium-playwright-CSharp/tree/main
+
+<details>
+<summary>Playwright: Lambda /tmp fills up after repeated invocations</summary>
+
+Playwright does not automatically clean up its user data directory between invocations on a warm Lambda. Over time, `/tmp` fills up and you'll see `ERR_INSUFFICIENT_RESOURCES` errors.
+
+**Workaround:** Set a unique `--user-data-dir` for each invocation and clean it up afterward:
+
+```typescript
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+
+const userDataDir = `/tmp/pw-${randomUUID()}`;
+
+const browser = await playwright.launch({
+  args: [...chromium.args, `--user-data-dir=${userDataDir}`],
+  executablePath: await chromium.executablePath(),
+  headless: true,
+});
+
+try {
+  // ... your code ...
+} finally {
+  await browser.close();
+  await rm(userDataDir, { recursive: true, force: true });
+}
+```
+
+This issue does not affect Puppeteer, which manages user data directories differently.
+
+</details>
 
 ## Fonts
 
@@ -356,11 +461,11 @@ By default, this package uses `swiftshader`/`angle` to do CPU acceleration for W
 
 > **Note:** For security reasons, we do not accept PRs that include updated binary files. Please submit the changes to build files only, and the maintainers will compile and update the binary files.
 
-1. Run `npm run update` to update [inventory.ini](_/ansible/inventory.ini) with the latest stable version of Chromium.
-2. Make any necessary changes to the [build-arch.yml](_/ansible/plays/build-arch.yml) file.
-3. Make any necessary changes to [inventory.ini](_/ansible/inventory.ini).
-4. Run the appropriate command from the [Makefile](_/ansible/Makefile). Use `make build` to compile both x64 and arm64 versions.
-5. If compiling both architectures and [al2023.tar.br](bin/x64/al2023.tar.br) has been modified, update the arm64 version by running `make build-arm-libs`.
+1. Run `npm run update` to update [revision.txt](_/ec2/revision.txt) with the latest stable version of Chromium.
+2. Make any necessary changes to the GN args in [\_/ec2/args-x64.gn](_/ec2/args-x64.gn) or [\_/ec2/args-arm64.gn](_/ec2/args-arm64.gn).
+3. Make any necessary changes to [revision.txt](_/ec2/revision.txt).
+4. Open a PR, add the `binaries:building` label, and the EC2 build will launch automatically.
+5. If compiling both architectures and [al2023.tar.br](bin/x64/al2023.tar.br) has been modified, update the arm64 version separately.
 6. Verify that the `chromium-###.#.#.#.br` files are valid.
 7. Rename them to `chromium.br`.
 8. If necessary, update the Open Sans font using `npm run build:fonts`.

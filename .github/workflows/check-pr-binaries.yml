@@ -1,0 +1,85 @@
+name: Check PR Binaries
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  check:
+    name: Check binary status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if revision.txt changed
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get the list of changed files in this PR
+          CHANGED=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files \
+            --paginate --jq '.[].filename' | grep -c '^_/ec2/revision.txt$' || true)
+
+          if [ "$CHANGED" -gt 0 ]; then
+            echo "revision_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "revision_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get current labels
+        id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LABELS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels \
+            --jq '.[].name' | grep '^binaries:' || true)
+          echo "current<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LABELS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Update labels (revision changed -> binaries:building)
+        if: steps.check.outputs.revision_changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          CURRENT="${{ steps.labels.outputs.current }}"
+
+          # Remove any existing binaries:* labels
+          while IFS= read -r LABEL; do
+            [ -z "$LABEL" ] && continue
+            if [ "$LABEL" != "binaries:building" ]; then
+              gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
+                -X DELETE || true
+            fi
+          done <<< "$CURRENT"
+
+          # Add binaries:building if not already present
+          if ! echo "$CURRENT" | grep -qx 'binaries:building'; then
+            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
+              -f "labels[]=binaries:building"
+          fi
+
+      - name: Update labels (revision unchanged -> binaries:available)
+        if: steps.check.outputs.revision_changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          CURRENT="${{ steps.labels.outputs.current }}"
+
+          # Remove any non-available binaries:* labels
+          while IFS= read -r LABEL; do
+            [ -z "$LABEL" ] && continue
+            if [ "$LABEL" != "binaries:available" ]; then
+              gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
+                -X DELETE || true
+            fi
+          done <<< "$CURRENT"
+
+          # Add binaries:available if not already present
+          if ! echo "$CURRENT" | grep -qx 'binaries:available'; then
+            gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
+              -f "labels[]=binaries:available"
+          fi

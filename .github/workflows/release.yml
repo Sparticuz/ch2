@@ -27,6 +27,35 @@ jobs:
 
       - run: npm ci
 
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(cat _/ec2/revision.txt)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          mkdir -p bin/x64 bin/arm64
+
+          # Download all binaries
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" bin/x64/ --exclude "*.json"
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/arm64/" bin/arm64/ --exclude "*.json"
+          aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
+
+          # Verify critical files exist
+          for f in bin/x64/chromium.br bin/arm64/chromium.br; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Missing required file: $f"
+              exit 1
+            fi
+          done
+
       - run: npm run build
 
       - name: Copy x64 binaries to bin
@@ -73,25 +102,31 @@ jobs:
           npm run pack:arm64
           mv chromium-pack.arm64.tar chromium-${{ github.ref_name }}-pack.arm64.tar
 
-      - name: Upload items to Github Release
-        uses: ncipollo/release-action@v1.21.0
-        with:
-          tag: ${{ github.ref_name }}
-          body: |
-            # [@sparticuz/chromium ${{ github.ref_name }}](https://www.npmjs.com/package/@sparticuz/chromium), [@sparticuz/chromium-min ${{ github.ref_name }}](https://www.npmjs.com/package/@sparticuz/chromium-min)
-            The `chromium-${{ github.ref_name }}-layer.ARCH.zip` file may be uploaded directly as a layer in AWS Lambda using the following code
-            ```
-            bucketName="chromiumUploadBucket" && archType="x64" && \
-            aws s3 cp chromium-${{ github.ref_name }}-layer.${archType}.zip "s3://${bucketName}/chromiumLayers/chromium-${{ github.ref_name }}-layer.${archType}.zip" && \
-            aws lambda publish-layer-version --layer-name chromium --description "Chromium ${{ github.ref_name }}" --content "S3Bucket=${bucketName},S3Key=chromiumLayers/chromium-${{ github.ref_name }}-layer.${archType}.zip" --compatible-runtimes "nodejs20.x" "nodejs22.x" --compatible-architectures $(if [ "$archType" = "x64" ]; then echo "x86_64"; else echo "$archType"; fi)
-            ```
-            The `chromium-${{ github.ref_name }}-pack.ARCH.tar` file may be uploaded to any https endpoint and the remote location may be used as the `input` variable in the `chromium.executablePath(input)` function.
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > /tmp/release-notes.md <<EOF
+          # [@sparticuz/chromium ${TAG}](https://www.npmjs.com/package/@sparticuz/chromium), [@sparticuz/chromium-min ${TAG}](https://www.npmjs.com/package/@sparticuz/chromium-min)
+          The \`chromium-${TAG}-layer.ARCH.zip\` file may be uploaded directly as a layer in AWS Lambda using the following code
+          \`\`\`
+          bucketName="chromiumUploadBucket" && archType="x64" && \\
+          aws s3 cp chromium-${TAG}-layer.\${archType}.zip "s3://\${bucketName}/chromiumLayers/chromium-${TAG}-layer.\${archType}.zip" && \\
+          aws lambda publish-layer-version --layer-name chromium --description "Chromium ${TAG}" --content "S3Bucket=\${bucketName},S3Key=chromiumLayers/chromium-${TAG}-layer.\${archType}.zip" --compatible-runtimes "nodejs20.x" "nodejs22.x" --compatible-architectures \$(if [ "\$archType" = "x64" ]; then echo "x86_64"; else echo "\$archType"; fi)
+          \`\`\`
+          The \`chromium-${TAG}-pack.ARCH.tar\` file may be uploaded to any https endpoint and the remote location may be used as the \`input\` variable in the \`chromium.executablePath(input)\` function.
 
-            Support this project's continued development by becoming a [monthly sponsor on GitHub](https://github.com/sponsors/Sparticuz). Your contribution helps cover monthly maintenance costs and ensures ongoing improvements.
-          artifacts: "chromium-${{ github.ref_name }}-layer.x64.zip,chromium-${{ github.ref_name }}-layer.arm64.zip,chromium-${{ github.ref_name }}-pack.x64.tar,chromium-${{ github.ref_name }}-pack.arm64.tar"
-          prerelease: false
-          draft: true
-          generateReleaseNotes: true
-          token: ${{ github.token }}
-          owner: Sparticuz
-          repo: chromium
+          Support this project's continued development by becoming a [monthly sponsor on GitHub](https://github.com/sponsors/Sparticuz). Your contribution helps cover monthly maintenance costs and ensures ongoing improvements.
+          EOF
+
+          gh release create "${TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "${TAG}" \
+            --draft \
+            --generate-notes \
+            --notes-file /tmp/release-notes.md \
+            "chromium-${TAG}-layer.x64.zip" \
+            "chromium-${TAG}-layer.arm64.zip" \
+            "chromium-${TAG}-pack.x64.tar" \
+            "chromium-${TAG}-pack.arm64.tar"

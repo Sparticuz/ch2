@@ -144,12 +144,12 @@ class Chromium {
      */
     input ??= getBinPath();
 
-    /**
-     * If the input directory doesn't exist, throw an error.
-     */
     if (!existsSync(input)) {
       throw new Error(
-        `The input directory "${input}" does not exist. Please provide the location of the brotli files.`,
+        `The input directory "${input}" does not exist. ` +
+          "If you are using a bundler (esbuild, webpack, etc.), you must " +
+          "externalize @sparticuz/chromium so it is not relocated. " +
+          "See: https://github.com/Sparticuz/chromium#bundler-configuration",
       );
     }
 

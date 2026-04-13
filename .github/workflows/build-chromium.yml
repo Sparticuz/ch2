@@ -1,0 +1,202 @@
+name: Build Chromium
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    name: Launch Chromium EC2 Build
+    if: github.event.label.name == 'binaries:building'
+    runs-on: ubuntu-latest
+    environment: chromium-build
+    timeout-minutes: 15
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(cat _/ec2/revision.txt)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+          echo "Chromium revision: ${REVISION}"
+
+      - name: Prepare user-data
+        id: userdata
+        env:
+          REVISION: ${{ steps.revision.outputs.revision }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_PAT: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_REPO_NAME: ${{ github.repository }}
+        run: |
+          # Package the _/ec2/ directory as a compressed tarball
+          ARCHIVE_B64=$(tar czf - -C _/ ec2/ | base64 -w 0)
+
+          # Build the user-data bootstrap script:
+          #   1. Set env vars (including the base64 tarball of _/ec2/)
+          #   2. Extract the tarball to /opt/chromium-build/
+          #   3. Run the orchestrator
+          {
+            echo '#!/bin/bash'
+            echo 'set -euo pipefail'
+            echo "ARCHIVE_B64=\"${ARCHIVE_B64}\""
+            echo "CHROMIUM_REVISION=\"${REVISION}\""
+            echo "S3_BUCKET=\"${S3_BUCKET}\""
+            echo "GITHUB_PAT=\"${GITHUB_PAT}\""
+            echo "GITHUB_REPO=\"${GITHUB_REPO_NAME}\""
+            echo "PR_NUMBER=\"${PR_NUMBER}\""
+            echo "AWS_DEFAULT_REGION=\"${AWS_DEFAULT_REGION}\""
+            echo 'export CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFAULT_REGION'
+            echo ''
+            echo 'mkdir -p /opt/chromium-build'
+            echo 'echo "$ARCHIVE_B64" | base64 -d | tar xzf - -C /opt/chromium-build/'
+            echo 'chmod +x /opt/chromium-build/ec2/*.sh'
+            echo ''
+            echo 'exec /opt/chromium-build/ec2/build-chromium.sh'
+          } > /tmp/userdata.sh
+
+          # Verify size (user-data limit is 16 KB)
+          SIZE=$(wc -c < /tmp/userdata.sh)
+          echo "User-data script size: ${SIZE} bytes"
+          if [ "$SIZE" -gt 16384 ]; then
+            echo "::error::User-data script exceeds 16 KB limit (${SIZE} bytes)"
+            exit 1
+          fi
+
+          echo "userdata_file=/tmp/userdata.sh" >> "$GITHUB_OUTPUT"
+
+      - name: Find default VPC and subnet
+        id: vpc
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=isDefault,Values=true" \
+            --query 'Vpcs[0].VpcId' --output text)
+          SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query 'Subnets[0].SubnetId' --output text)
+          echo "vpc_id=${VPC_ID}" >> "$GITHUB_OUTPUT"
+          echo "subnet_id=${SUBNET_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Create security group (if needed)
+        id: sg
+        run: |
+          SG_NAME="chromium-build"
+          VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
+
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${SG_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+
+          if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
+            echo "Creating security group..."
+            SG_ID=$(aws ec2 create-security-group \
+              --group-name "${SG_NAME}" \
+              --description "Chromium build - egress only" \
+              --vpc-id "${VPC_ID}" \
+              --query 'GroupId' --output text)
+            echo "Security group created: ${SG_ID}"
+          else
+            echo "Security group exists: ${SG_ID}"
+          fi
+          echo "sg_id=${SG_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Get AMI ID
+        id: ami
+        run: |
+          AMI_ID=$(aws ssm get-parameters \
+            --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 \
+            --query 'Parameters[0].Value' --output text)
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+          echo "AMI: ${AMI_ID}"
+
+      - name: Create S3 pending marker
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          DEADLINE=$(date -u -d "+8 hours" +"%Y-%m-%dT%H:%M:%SZ")
+          cat <<EOF > /tmp/pending.json
+          {
+            "revision": "${REVISION}",
+            "pr_number": ${PR_NUMBER},
+            "started_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "deadline": "${DEADLINE}",
+            "repository": "${{ github.repository }}"
+          }
+          EOF
+          aws s3 cp /tmp/pending.json "s3://${S3_BUCKET}/${REVISION}/pending.json"
+
+      - name: Launch EC2 instance
+        id: ec2
+        env:
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "${{ steps.ami.outputs.ami_id }}" \
+            --instance-type c8id.8xlarge \
+            --security-group-ids "${{ steps.sg.outputs.sg_id }}" \
+            --subnet-id "${{ steps.vpc.outputs.subnet_id }}" \
+            --associate-public-ip-address \
+            --instance-initiated-shutdown-behavior terminate \
+            --user-data "file://${{ steps.userdata.outputs.userdata_file }}" \
+            --iam-instance-profile Name=chromium-build \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=chromium-build},{Key=Revision,Value=${REVISION}},{Key=PR,Value=${{ github.event.pull_request.number }}}]" \
+            --query 'Instances[0].InstanceId' --output text)
+
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Launched: ${INSTANCE_ID}"
+
+          # Wait for instance to be running
+          aws ec2 wait instance-running --instance-ids "${INSTANCE_ID}"
+          echo "Instance is running"
+
+          # Update pending marker with instance ID
+          PENDING=$(aws s3 cp "s3://${S3_BUCKET}/${REVISION}/pending.json" -)
+          echo "$PENDING" | jq --arg iid "$INSTANCE_ID" '. + {instance_id: $iid}' | \
+            aws s3 cp - "s3://${S3_BUCKET}/${REVISION}/pending.json"
+
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "## Chromium Build Launched
+
+          | | Value |
+          |---|---|
+          | **Revision** | \`${{ steps.revision.outputs.revision }}\` |
+          | **Instance** | \`${{ steps.ec2.outputs.instance_id }}\` |
+          | **S3 Location** | \`s3://${{ env.S3_BUCKET }}/${{ steps.revision.outputs.revision }}/\` |
+          | **Instance Type** | c8id.8xlarge |
+          | **Deadline** | 8 hours from now |
+
+          The EC2 instance is running autonomously. No SSH or GitHub runner connection is needed.
+          The instance will upload artifacts to S3, notify this PR, and self-terminate."
+
+      - name: Emergency teardown (on failure)
+        if: failure()
+        run: |
+          INSTANCE_ID="${{ steps.ec2.outputs.instance_id }}"
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "" ]; then
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" || true
+          fi
+          # Also terminate by tag as fallback
+          STALE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=chromium-build" "Name=instance-state-name,Values=running,pending" \
+            --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)
+          if [ -n "$STALE_IDS" ]; then
+            aws ec2 terminate-instances --instance-ids $STALE_IDS || true
+          fi
