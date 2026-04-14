@@ -15,6 +15,36 @@ headless_shell for x64 and arm64. The instance self-terminates on completion.
 6. Sends `repository_dispatch` event to GitHub
 7. Instance shuts down (terminates via `instance_initiated_shutdown_behavior`)
 
+## Build Options
+
+Add these labels to the PR **before** adding `binaries:building`:
+
+| Label             | Default    | Effect                                                     |
+| ----------------- | ---------- | ---------------------------------------------------------- |
+| `build:on-demand` | off (spot) | Use on-demand pricing instead of spot (~3x more expensive) |
+| `build:ssh`       | off        | Enable SSH access + screen session for live monitoring     |
+
+**Spot pricing** is the default. Spot instances cost ~70% less but can be
+interrupted with 2 minutes notice. If interrupted, the safety net will detect
+the stale build and mark it as failed. Just retry.
+
+**SSH monitoring** (when `build:ssh` is set):
+
+```bash
+# Get the instance IP from pending.json
+aws s3 cp s3://BUCKET/REVISION/pending.json - | jq -r .public_ip
+
+# SSH in and attach to the build screen session
+ssh root@<IP>
+screen -r build
+```
+
+**Progress without SSH:**
+
+```bash
+aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
+```
+
 ## Script Layout
 
 | File                | Purpose                                                                         |
@@ -208,22 +238,8 @@ Create a **granular access token** on npmjs.com with:
 ### Security Group: `chromium-build`
 
 Created automatically by the workflow on first run. Uses default VPC egress
-rules (all outbound traffic allowed). Allows inbound SSH (port 22) for build
-monitoring — authentication is key-only via `SSH_PUBLIC_KEY` secret.
-
-### Monitoring a Running Build
-
-```bash
-# Get the instance IP from pending.json
-aws s3 cp s3://BUCKET/REVISION/pending.json - | jq -r .public_ip
-
-# SSH in and attach to the build screen session
-ssh root@<IP>
-screen -r build
-
-# Or check progress without SSH
-aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
-```
+rules (all outbound traffic allowed). When the `build:ssh` label is present,
+port 22 is opened for SSH access (key-only auth via `SSH_PUBLIC_KEY` secret).
 
 ## Local Testing
 

@@ -36,6 +36,33 @@ jobs:
           echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
           echo "Chromium revision: ${REVISION}"
 
+      - name: Detect build options from PR labels
+        id: options
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LABELS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels \
+            --jq '.[].name' | tr '\n' ' ')
+          echo "PR labels: ${LABELS}"
+
+          # Spot is default; build:on-demand overrides
+          if echo "$LABELS" | grep -q 'build:on-demand'; then
+            echo "use_spot=false" >> "$GITHUB_OUTPUT"
+            echo "Market type: on-demand"
+          else
+            echo "use_spot=true" >> "$GITHUB_OUTPUT"
+            echo "Market type: spot"
+          fi
+
+          # SSH is off by default; build:ssh enables
+          if echo "$LABELS" | grep -q 'build:ssh'; then
+            echo "use_ssh=true" >> "$GITHUB_OUTPUT"
+            echo "SSH: enabled"
+          else
+            echo "use_ssh=false" >> "$GITHUB_OUTPUT"
+            echo "SSH: disabled"
+          fi
+
       - name: Prepare user-data
         id: userdata
         env:
@@ -44,6 +71,7 @@ jobs:
           GITHUB_PAT: ${{ secrets.RELEASE_TOKEN }}
           GITHUB_REPO_NAME: ${{ github.repository }}
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          USE_SSH: ${{ steps.options.outputs.use_ssh }}
         run: |
           # Package the _/ec2/ directory as a compressed tarball
           ARCHIVE_B64=$(tar czf - -C _/ ec2/ | base64 -w 0)
@@ -64,20 +92,24 @@ jobs:
             echo "AWS_DEFAULT_REGION=\"${AWS_DEFAULT_REGION}\""
             echo 'export CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFAULT_REGION'
             echo ''
-            echo '# SSH access: inject public key for root'
-            echo 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'
-            if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+            if [ "${USE_SSH}" = "true" ] && [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+              echo '# SSH access: inject public key for root'
+              echo 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'
               echo "echo '${SSH_PUBLIC_KEY}' >> /root/.ssh/authorized_keys"
+              echo 'chmod 600 /root/.ssh/authorized_keys'
             fi
-            echo 'chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true'
             echo ''
             echo 'mkdir -p /opt/chromium-build'
             echo 'echo "$ARCHIVE_B64" | base64 -d | tar xzf - -C /opt/chromium-build/'
             echo 'chmod +x /opt/chromium-build/ec2/*.sh'
             echo ''
-            echo '# Install screen and run build in a named session'
-            echo 'dnf install -y screen'
-            echo 'screen -dmS build /opt/chromium-build/ec2/build-chromium.sh'
+            if [ "${USE_SSH}" = "true" ]; then
+              echo '# Install screen and run build in a named session'
+              echo 'dnf install -y screen'
+              echo 'screen -dmS build /opt/chromium-build/ec2/build-chromium.sh'
+            else
+              echo 'exec /opt/chromium-build/ec2/build-chromium.sh'
+            fi
           } > /tmp/userdata.sh
 
           # Verify size (user-data limit is 16 KB)
@@ -122,6 +154,8 @@ jobs:
 
       - name: Create security group (if needed)
         id: sg
+        env:
+          USE_SSH: ${{ steps.options.outputs.use_ssh }}
         run: |
           SG_NAME="chromium-build"
           VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
@@ -134,22 +168,22 @@ jobs:
             echo "Creating security group..."
             SG_ID=$(aws ec2 create-security-group \
               --group-name "${SG_NAME}" \
-              --description "Chromium build - egress + SSH" \
+              --description "Chromium build - egress + optional SSH" \
               --vpc-id "${VPC_ID}" \
               --query 'GroupId' --output text)
-
-            # Allow SSH from anywhere (key-auth only, instance is short-lived)
-            aws ec2 authorize-security-group-ingress \
-              --group-id "${SG_ID}" \
-              --protocol tcp --port 22 --cidr 0.0.0.0/0
             echo "Security group created: ${SG_ID}"
           else
             echo "Security group exists: ${SG_ID}"
-            # Ensure SSH ingress rule exists (idempotent)
+          fi
+
+          # Add SSH ingress if requested (idempotent)
+          if [ "${USE_SSH}" = "true" ]; then
             aws ec2 authorize-security-group-ingress \
               --group-id "${SG_ID}" \
               --protocol tcp --port 22 --cidr 0.0.0.0/0 2>/dev/null || true
+            echo "SSH ingress rule ensured"
           fi
+
           echo "sg_id=${SG_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Get AMI ID
@@ -182,7 +216,13 @@ jobs:
         id: ec2
         env:
           REVISION: ${{ steps.revision.outputs.revision }}
+          USE_SPOT: ${{ steps.options.outputs.use_spot }}
         run: |
+          MARKET_OPTS=()
+          if [ "${USE_SPOT}" = "true" ]; then
+            MARKET_OPTS=(--instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
+          fi
+
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id "${{ steps.ami.outputs.ami_id }}" \
             --instance-type "${INSTANCE_TYPE}" \
@@ -193,6 +233,7 @@ jobs:
             --user-data "file://${{ steps.userdata.outputs.userdata_file }}" \
             --iam-instance-profile Name=chromium-build \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=chromium-build},{Key=Revision,Value=${REVISION}},{Key=PR,Value=${{ github.event.pull_request.number }}}]" \
+            ${MARKET_OPTS[@]+"${MARKET_OPTS[@]}"} \
             --query 'Instances[0].InstanceId' --output text)
 
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
@@ -215,7 +256,14 @@ jobs:
       - name: Comment on PR
         env:
           GH_TOKEN: ${{ github.token }}
+          USE_SPOT: ${{ steps.options.outputs.use_spot }}
+          USE_SSH: ${{ steps.options.outputs.use_ssh }}
         run: |
+          MARKET_TYPE="on-demand"
+          if [ "${USE_SPOT}" = "true" ]; then MARKET_TYPE="spot"; fi
+          SSH_STATUS="disabled"
+          if [ "${USE_SSH}" = "true" ]; then SSH_STATUS="enabled"; fi
+
           gh pr comment ${{ github.event.pull_request.number }} --body "## Chromium Build Launched
 
           | | Value |
@@ -223,9 +271,11 @@ jobs:
           | **Revision** | \`${{ steps.revision.outputs.revision }}\` |
           | **Instance** | \`${{ steps.ec2.outputs.instance_id }}\` |
           | **Instance Type** | \`${{ env.INSTANCE_TYPE }}\` |
+          | **Market** | ${MARKET_TYPE} |
+          | **SSH** | ${SSH_STATUS} |
           | **Deadline** | 8 hours from now |
 
-          The EC2 instance is running autonomously. No SSH or GitHub runner connection is needed.
+          The EC2 instance is running autonomously. No GitHub runner connection is needed.
           The instance will upload artifacts to S3, notify this PR, and self-terminate."
 
       - name: Emergency teardown (on failure)
