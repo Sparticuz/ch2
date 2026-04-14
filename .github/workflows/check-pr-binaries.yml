@@ -38,7 +38,7 @@ jobs:
           echo "$LABELS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Update labels (revision changed -> binaries:building)
+      - name: Update labels (revision changed -> binaries:needed)
         if: steps.check.outputs.revision_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,19 +46,19 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # Remove any existing binaries:* labels
+          # Remove any existing binaries:* labels (except binaries:needed)
           while IFS= read -r LABEL; do
             [ -z "$LABEL" ] && continue
-            if [ "$LABEL" != "binaries:building" ]; then
+            if [ "$LABEL" != "binaries:needed" ]; then
               gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
                 -X DELETE || true
             fi
           done <<< "$CURRENT"
 
-          # Add binaries:building if not already present
-          if ! echo "$CURRENT" | grep -qx 'binaries:building'; then
+          # Add binaries:needed if not already present
+          if ! echo "$CURRENT" | grep -qx 'binaries:needed'; then
             gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
-              -f "labels[]=binaries:building"
+              -f "labels[]=binaries:needed"
           fi
 
       - name: Update labels (revision unchanged -> binaries:available)

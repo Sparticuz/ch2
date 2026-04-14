@@ -80,8 +80,9 @@ jobs:
             ### Next Steps
 
             1. Review the revision change in `_/ec2/revision.txt`
-            2. Add the `binaries:building` label to trigger the EC2 build
-            3. Once the build completes, binaries will be available in S3 and tests will run automatically
+            2. The `binaries:needed` label has been added automatically
+            3. When ready, add the `binaries:building` label to trigger the EC2 build
+            4. Once the build completes, binaries will be available in S3 and tests will run automatically
 
             ---
             *This PR was created automatically by the [Check Chromium Update](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*
