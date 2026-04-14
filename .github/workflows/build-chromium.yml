@@ -122,7 +122,7 @@ jobs:
 
           echo "userdata_file=/tmp/userdata.sh" >> "$GITHUB_OUTPUT"
 
-      - name: Find default VPC and subnet
+      - name: Find default VPC and subnets
         id: vpc
         run: |
           VPC_ID=$(aws ec2 describe-vpcs \
@@ -136,21 +136,23 @@ jobs:
             --query 'InstanceTypeOfferings[].Location' --output json)
           echo "AZs supporting ${INSTANCE_TYPE}: ${SUPPORTED_AZS}"
 
-          # Pick first subnet whose AZ is in the supported list
-          SUBNET_ID=$(aws ec2 describe-subnets \
+          # Get all subnets in supported AZs (space-separated for iteration)
+          SUBNET_IDS=$(aws ec2 describe-subnets \
             --filters "Name=vpc-id,Values=${VPC_ID}" \
             --query 'Subnets[].{Id:SubnetId,AZ:AvailabilityZone}' --output json \
             | jq -r --argjson azs "$SUPPORTED_AZS" \
-              '[.[] | select(.AZ as $az | $azs | index($az))] | .[0].Id')
+              '[.[] | select(.AZ as $az | $azs | index($az))] | .[].Id')
 
-          if [ "$SUBNET_ID" = "null" ] || [ -z "$SUBNET_ID" ]; then
+          if [ -z "$SUBNET_IDS" ]; then
             echo "::error::No subnet found in an AZ that supports ${INSTANCE_TYPE}"
             exit 1
           fi
 
           echo "vpc_id=${VPC_ID}" >> "$GITHUB_OUTPUT"
-          echo "subnet_id=${SUBNET_ID}" >> "$GITHUB_OUTPUT"
-          echo "Subnet: ${SUBNET_ID}"
+          echo "subnet_ids<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$SUBNET_IDS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "Subnets: ${SUBNET_IDS}"
 
       - name: Create security group (if needed)
         id: sg
@@ -217,24 +219,44 @@ jobs:
         env:
           REVISION: ${{ steps.revision.outputs.revision }}
           USE_SPOT: ${{ steps.options.outputs.use_spot }}
+          SUBNET_IDS: ${{ steps.vpc.outputs.subnet_ids }}
         run: |
           MARKET_OPTS=()
           if [ "${USE_SPOT}" = "true" ]; then
             MARKET_OPTS=(--instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
           fi
 
-          INSTANCE_ID=$(aws ec2 run-instances \
-            --image-id "${{ steps.ami.outputs.ami_id }}" \
-            --instance-type "${INSTANCE_TYPE}" \
-            --security-group-ids "${{ steps.sg.outputs.sg_id }}" \
-            --subnet-id "${{ steps.vpc.outputs.subnet_id }}" \
-            --associate-public-ip-address \
-            --instance-initiated-shutdown-behavior terminate \
-            --user-data "file://${{ steps.userdata.outputs.userdata_file }}" \
-            --iam-instance-profile Name=chromium-build \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=chromium-build},{Key=Revision,Value=${REVISION}},{Key=PR,Value=${{ github.event.pull_request.number }}}]" \
-            ${MARKET_OPTS[@]+"${MARKET_OPTS[@]}"} \
-            --query 'Instances[0].InstanceId' --output text)
+          # Try each subnet (AZ) until one has capacity
+          INSTANCE_ID=""
+          LAST_ERROR=""
+          while IFS= read -r SUBNET_ID; do
+            [ -z "$SUBNET_ID" ] && continue
+            echo "Trying subnet ${SUBNET_ID}..."
+            if INSTANCE_ID=$(aws ec2 run-instances \
+              --image-id "${{ steps.ami.outputs.ami_id }}" \
+              --instance-type "${INSTANCE_TYPE}" \
+              --security-group-ids "${{ steps.sg.outputs.sg_id }}" \
+              --subnet-id "${SUBNET_ID}" \
+              --associate-public-ip-address \
+              --instance-initiated-shutdown-behavior terminate \
+              --user-data "file://${{ steps.userdata.outputs.userdata_file }}" \
+              --iam-instance-profile Name=chromium-build \
+              --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=chromium-build},{Key=Revision,Value=${REVISION}},{Key=PR,Value=${{ github.event.pull_request.number }}}]" \
+              ${MARKET_OPTS[@]+"${MARKET_OPTS[@]}"} \
+              --query 'Instances[0].InstanceId' --output text 2>/tmp/ec2-error.txt); then
+              echo "Launched in ${SUBNET_ID}: ${INSTANCE_ID}"
+              break
+            else
+              LAST_ERROR=$(cat /tmp/ec2-error.txt)
+              echo "Failed in ${SUBNET_ID}: ${LAST_ERROR}"
+              INSTANCE_ID=""
+            fi
+          done <<< "$SUBNET_IDS"
+
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "::error::Failed to launch in all AZs. Last error: ${LAST_ERROR}"
+            exit 1
+          fi
 
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
           echo "Launched: ${INSTANCE_ID}"
