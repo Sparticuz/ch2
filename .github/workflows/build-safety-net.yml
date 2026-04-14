@@ -117,5 +117,5 @@ jobs:
 
           ### Manual Verification
           - Check [AWS EC2 Console](https://console.aws.amazon.com/ec2/) for lingering instances
-          - Verify S3 bucket \`${S3_BUCKET}\` for partial artifacts" \
+          - Verify the S3 bucket for partial artifacts" \
             --label "bug"

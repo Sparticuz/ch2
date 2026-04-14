@@ -198,7 +198,6 @@ jobs:
           |---|---|
           | **Revision** | \`${{ steps.revision.outputs.revision }}\` |
           | **Instance** | \`${{ steps.ec2.outputs.instance_id }}\` |
-          | **S3 Location** | \`s3://${{ env.S3_BUCKET }}/${{ steps.revision.outputs.revision }}/\` |
           | **Instance Type** | \`${{ env.INSTANCE_TYPE }}\` |
           | **Deadline** | 8 hours from now |
 
