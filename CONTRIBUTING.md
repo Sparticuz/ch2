@@ -6,27 +6,36 @@ don't touch the build system, skip to [Development Workflow](#development-workfl
 
 ## Table of Contents
 
-- [Prerequisites](#prerequisites)
-- [AWS Setup](#aws-setup)
-  - [S3 Bucket](#1-s3-bucket)
-  - [IAM Role for EC2 (Instance Profile)](#2-iam-role-for-ec2-instance-profile)
-  - [IAM User for GitHub Actions](#3-iam-user-for-github-actions)
-- [SSH Key Setup](#ssh-key-setup)
-- [GitHub Repository Setup](#github-repository-setup)
-  - [Secrets](#secrets)
-  - [Labels](#labels)
-  - [Workflow Permissions](#workflow-permissions)
-- [Development Workflow](#development-workflow)
-  - [TypeScript Changes](#typescript-changes)
-  - [Updating the Chromium Revision](#updating-the-chromium-revision)
-- [Build System](#build-system)
-  - [How It Works](#how-it-works)
-  - [Label Lifecycle](#label-lifecycle)
-  - [Build Options](#build-options)
-  - [Monitoring a Build](#monitoring-a-build)
-  - [Safety Net](#safety-net)
-- [Release Process](#release-process)
-- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+  - [Table of Contents](#table-of-contents)
+  - [Prerequisites](#prerequisites)
+  - [AWS Setup](#aws-setup)
+    - [1. S3 Bucket](#1-s3-bucket)
+    - [2. IAM Role for EC2 (Instance Profile)](#2-iam-role-for-ec2-instance-profile)
+    - [3. IAM User for GitHub Actions](#3-iam-user-for-github-actions)
+  - [SSH Key Setup](#ssh-key-setup)
+  - [GitHub Repository Setup](#github-repository-setup)
+    - [Secrets](#secrets)
+    - [Labels](#labels)
+    - [Workflow Permissions](#workflow-permissions)
+  - [Development Workflow](#development-workflow)
+    - [TypeScript Changes](#typescript-changes)
+    - [Updating the Chromium Revision](#updating-the-chromium-revision)
+  - [Build System](#build-system)
+    - [How It Works](#how-it-works)
+    - [Label Lifecycle](#label-lifecycle)
+    - [Build Options](#build-options)
+    - [Monitoring a Build](#monitoring-a-build)
+    - [Safety Net](#safety-net)
+  - [Release Process](#release-process)
+  - [Troubleshooting](#troubleshooting)
+    - [Build fails with "No subnet found in an AZ that supports c8id.8xlarge"](#build-fails-with-no-subnet-found-in-an-az-that-supports-c8id8xlarge)
+    - [Spot instance interrupted mid-build](#spot-instance-interrupted-mid-build)
+    - [Build marked as stale by safety net but still running](#build-marked-as-stale-by-safety-net-but-still-running)
+    - [`pending.json` orphaned in S3](#pendingjson-orphaned-in-s3)
+    - [Labels added by workflow don't trigger builds](#labels-added-by-workflow-dont-trigger-builds)
+    - [Workflows not visible on Actions tab](#workflows-not-visible-on-actions-tab)
+    - [`aws s3 sync` returns zero objects](#aws-s3-sync-returns-zero-objects)
 
 ---
 
@@ -45,8 +54,7 @@ and an IAM user for the GitHub Actions runner.
 
 ### 1. S3 Bucket
 
-Create a private S3 bucket in `us-east-1`. The bucket name is treated as a secret
-and must never appear in PR comments, issue bodies, or workflow logs.
+Create a private S3 bucket in `us-east-1`.
 
 ```bash
 aws s3 mb s3://YOUR-BUCKET-NAME --region us-east-1
@@ -61,7 +69,7 @@ REVISION/
   completed.json        # final build status
   progress.json         # phase-by-phase progress
   build.log             # full build log
-  fonts.tar.br          # font archive (if updated)
+  fonts.tar.br          # font archive
   x64/
     chromium.br          # brotli-compressed headless_shell
     swiftshader.tar.br   # SwiftShader libraries
@@ -109,7 +117,8 @@ aws iam put-role-policy \
         "Action": [
           "s3:PutObject",
           "s3:GetObject",
-          "s3:DeleteObject"
+          "s3:DeleteObject",
+          "s3:ListBucket"
         ],
         "Resource": [
           "arn:aws:s3:::YOUR-BUCKET-NAME",
@@ -298,9 +307,6 @@ gh label create "binaries:failed"    --description "Chromium build failed"      
 # Build option labels
 gh label create "build:on-demand"    --description "Use on-demand EC2 pricing instead of spot"      --color "D93F0B"
 gh label create "build:ssh"          --description "Enable SSH + screen session on build instance"   --color "0E8A16"
-
-# PR type labels
-gh label create "chromium-update"    --description "Automated Chromium revision update"              --color "0075CA"
 ```
 
 ### Workflow Permissions
@@ -422,14 +428,14 @@ You can also trigger it manually from the Actions tab.
 
 ## Release Process
 
-Releases are semi-automated across two workflows:
+Releases are manual, triggered across two workflows:
 
-1. **`prepare-release.yml`** — triggers when a `chromium-update` PR is merged
-   (or manually via `workflow_dispatch`). It bumps the version in `package.json`,
+1. **`prepare-release.yml`** — triggered manually via `workflow_dispatch` from the
+   Actions tab. You provide the version (e.g. `148.0.0`). It bumps `package.json`,
    commits, creates a git tag, and pushes. The tag push triggers the next step.
 
-2. **`release.yml`** — triggers on tag push. It downloads binaries from S3,
-   builds the TypeScript, publishes `@sparticuz/chromium` and
+2. **`release.yml`** — triggers automatically on tag push. It downloads binaries
+   from S3, builds the TypeScript, publishes `@sparticuz/chromium` and
    `@sparticuz/chromium-min` to npm with provenance, creates Lambda layer zips,
    and creates a draft GitHub release with all assets attached.
 

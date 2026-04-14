@@ -98,6 +98,4 @@ jobs:
             ---
             *This PR was created automatically by the [Check Chromium Update](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*
           branch: chore/chromium-update-${{ steps.latest.outputs.revision }}
-          labels: |
-            chromium-update
-            binaries:needed
+          labels: binaries:needed

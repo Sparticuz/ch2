@@ -1,8 +1,6 @@
 name: Prepare Release
 
 on:
-  pull_request:
-    types: [closed]
   workflow_dispatch:
     inputs:
       version:
@@ -17,11 +15,6 @@ jobs:
   prepare:
     name: Bump version and tag
     runs-on: ubuntu-latest
-    # For PR trigger: only run when a chromium-update PR is merged to master
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-       contains(github.event.pull_request.labels.*.name, 'chromium-update'))
 
     steps:
       - name: Checkout
@@ -34,50 +27,31 @@ jobs:
           # a repository secret named RELEASE_TOKEN.
           token: ${{ secrets.RELEASE_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Determine version
-        id: version
+      - name: Validate version format
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            # Fetch current stable Chrome version from API
-            RESPONSE=$(curl -sf "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json")
-            CHROME_VERSION=$(echo "$RESPONSE" | jq -r '.channels.Stable.version')
-            MAJOR=$(echo "$CHROME_VERSION" | cut -d. -f1)
-            VERSION="${MAJOR}.0.0"
-          fi
-
-          # Validate version format (X.Y.Z)
+          VERSION="${{ inputs.version }}"
           if ! echo "$VERSION" | grep -qP '^\d+\.\d+\.\d+$'; then
             echo "Invalid version format: ${VERSION}"
             exit 1
           fi
 
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Preparing release: ${VERSION}"
-
       - name: Check if version already exists
         run: |
-          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-            echo "Tag v${{ steps.version.outputs.version }} already exists!"
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "Tag v${{ inputs.version }} already exists!"
             exit 1
           fi
 
       - name: Bump version in package.json
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        run: npm version "${{ inputs.version }}" --no-git-tag-version
 
       - name: Commit and tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json
-          git commit -m "${{ steps.version.outputs.version }}"
-          git tag -a "v${{ steps.version.outputs.version }}" -m "${{ steps.version.outputs.version }}"
+          git commit -m "${{ inputs.version }}"
+          git tag -a "v${{ inputs.version }}" -m "${{ inputs.version }}"
 
       - name: Push commit and tag
         run: git push origin master --follow-tags
