@@ -457,28 +457,25 @@ By default, this package uses `swiftshader`/`angle` to do CPU acceleration for W
 
 ## Contributing
 
-### Updating the binaries
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide, including AWS setup,
+SSH key generation, GitHub configuration, and the build/release process.
 
-> **Note:** For security reasons, we do not accept PRs that include updated binary files. Please submit the changes to build files only, and the maintainers will compile and update the binary files.
+**Quick start for code changes:**
 
-1. Run `npm run update` to update [revision.txt](_/ec2/revision.txt) with the latest stable version of Chromium.
-2. Make any necessary changes to the GN args in [\_/ec2/args-x64.gn](_/ec2/args-x64.gn) or [\_/ec2/args-arm64.gn](_/ec2/args-arm64.gn).
-3. Make any necessary changes to [revision.txt](_/ec2/revision.txt).
-4. Open a PR, add the `binaries:building` label, and the EC2 build will launch automatically.
-5. If compiling both architectures and [al2023.tar.br](bin/x64/al2023.tar.br) has been modified, update the arm64 version separately.
-6. Verify that the `chromium-###.#.#.#.br` files are valid.
-7. Rename them to `chromium.br`.
-8. If necessary, update the Open Sans font using `npm run build:fonts`.
-9. Run tests on the new version of Chromium. (`npm run test:source` and `npm run test:integration`). Integration tests requires AWS SAM cli and docker installed.
+1. Edit source files in [`source/`](source/).
+2. Create or update tests in [`tests/`](tests/).
+3. Lint: `npm run lint`
+4. Build: `npm run build`
+5. Test: `npm run test:source` (unit) and `npm run test:integration` (requires AWS SAM CLI + Docker).
 
-### Updating Typescript application code
+**Updating Chromium binaries:**
 
-1. Edit any of the source files in [source](source/).
-2. Create or update tests in [tests](tests/).
-3. Lint the package using `npm run lint`.
-4. Build the package using `npm run build`.
-5. Test the updates using `npm run test:source`.
-6. Run a full integration test using `npm run test:integration`. This requires AWS SAM cli and docker installed.
+1. Run `npm run update` to fetch the latest revision into [`_/ec2/revision.txt`](_/ec2/revision.txt).
+2. Open a PR — the `binaries:needed` label is added automatically.
+3. Add the `binaries:building` label to start the EC2 build (~5 hours).
+4. See [CONTRIBUTING.md](CONTRIBUTING.md#build-system) for build options and monitoring.
+
+> **Note:** PRs with binary files are not accepted. Binaries are built by EC2 and stored in S3.
 
 ## AWS Lambda Layer
 
