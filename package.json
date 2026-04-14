@@ -60,14 +60,12 @@
     "update": "node ./tools/update-browser-revision.mjs"
   },
   "dependencies": {
-    "follow-redirects": "^1.15.11",
     "tar-fs": "^3.1.2"
   },
   "devDependencies": {
     "@sparticuz/eslint-config": "^10.2.2",
     "@tsconfig/node20": "^20.1.9",
     "@tsconfig/strictest": "^2.0.8",
-    "@types/follow-redirects": "^1.14.4",
     "@types/node": "^20.19.39",
     "@types/tar-fs": "^2.0.4",
     "@vitest/coverage-v8": "^4.1.4",
