@@ -43,6 +43,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_PAT: ${{ secrets.RELEASE_TOKEN }}
           GITHUB_REPO_NAME: ${{ github.repository }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
           # Package the _/ec2/ directory as a compressed tarball
           ARCHIVE_B64=$(tar czf - -C _/ ec2/ | base64 -w 0)
@@ -63,11 +64,20 @@ jobs:
             echo "AWS_DEFAULT_REGION=\"${AWS_DEFAULT_REGION}\""
             echo 'export CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFAULT_REGION'
             echo ''
+            echo '# SSH access: inject public key for root'
+            echo 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'
+            if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+              echo "echo '${SSH_PUBLIC_KEY}' >> /root/.ssh/authorized_keys"
+            fi
+            echo 'chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true'
+            echo ''
             echo 'mkdir -p /opt/chromium-build'
             echo 'echo "$ARCHIVE_B64" | base64 -d | tar xzf - -C /opt/chromium-build/'
             echo 'chmod +x /opt/chromium-build/ec2/*.sh'
             echo ''
-            echo 'exec /opt/chromium-build/ec2/build-chromium.sh'
+            echo '# Install screen and run build in a named session'
+            echo 'dnf install -y screen'
+            echo 'screen -dmS build /opt/chromium-build/ec2/build-chromium.sh'
           } > /tmp/userdata.sh
 
           # Verify size (user-data limit is 16 KB)
@@ -124,12 +134,21 @@ jobs:
             echo "Creating security group..."
             SG_ID=$(aws ec2 create-security-group \
               --group-name "${SG_NAME}" \
-              --description "Chromium build - egress only" \
+              --description "Chromium build - egress + SSH" \
               --vpc-id "${VPC_ID}" \
               --query 'GroupId' --output text)
+
+            # Allow SSH from anywhere (key-auth only, instance is short-lived)
+            aws ec2 authorize-security-group-ingress \
+              --group-id "${SG_ID}" \
+              --protocol tcp --port 22 --cidr 0.0.0.0/0
             echo "Security group created: ${SG_ID}"
           else
             echo "Security group exists: ${SG_ID}"
+            # Ensure SSH ingress rule exists (idempotent)
+            aws ec2 authorize-security-group-ingress \
+              --group-id "${SG_ID}" \
+              --protocol tcp --port 22 --cidr 0.0.0.0/0 2>/dev/null || true
           fi
           echo "sg_id=${SG_ID}" >> "$GITHUB_OUTPUT"
 
@@ -183,9 +202,14 @@ jobs:
           aws ec2 wait instance-running --instance-ids "${INSTANCE_ID}"
           echo "Instance is running"
 
-          # Update pending marker with instance ID
+          # Update pending marker with instance ID and public IP
+          PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
           PENDING=$(aws s3 cp "s3://${S3_BUCKET}/${REVISION}/pending.json" -)
-          echo "$PENDING" | jq --arg iid "$INSTANCE_ID" '. + {instance_id: $iid}' | \
+          echo "$PENDING" | jq \
+            --arg iid "$INSTANCE_ID" \
+            --arg ip "$PUBLIC_IP" \
+            '. + {instance_id: $iid, public_ip: $ip}' | \
             aws s3 cp - "s3://${S3_BUCKET}/${REVISION}/pending.json"
 
       - name: Comment on PR
