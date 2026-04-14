@@ -80,8 +80,8 @@ jobs:
             ### Next Steps
 
             1. Review the revision change in `_/ec2/revision.txt`
-            2. The `binaries:needed` label has been added automatically
-            3. When ready, add the `binaries:building` label to trigger the EC2 build
+            2. When ready, add the `binaries:building` label to trigger the EC2 build
+            3. A maintainer will need to approve the build
             4. Once the build completes, binaries will be available in S3 and tests will run automatically
 
             ### Build Options
