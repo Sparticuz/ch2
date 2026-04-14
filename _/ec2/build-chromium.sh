@@ -13,6 +13,10 @@
 
 set -euo pipefail
 
+# Ensure HOME is set — user-data runs via cloud-init where HOME may be unset,
+# causing depot_tools auth and metrics warnings.
+export HOME="${HOME:-/root}"
+
 # Resolve the directory containing this script and its companions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
