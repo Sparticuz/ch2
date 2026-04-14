@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shutdown -h +480 "Build safety timeout reached (8 hours)"
 
 LOG="/var/log/chromium-build.log"
+BUILD_START_EPOCH=$(date +%s)
 exec > >(tee -a "$LOG") 2>&1
 echo "=== Chromium Build Started at $(date -u) ==="
 echo "Revision: ${CHROMIUM_REVISION-}"
@@ -36,6 +37,31 @@ for VAR in CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFA
   fi
 done
 [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "FATAL: PR_NUMBER must be a number, got: ${PR_NUMBER}"; exit 1; }
+
+# Helper: upload progress marker to S3
+report_progress() {
+  local PHASE="$1"
+  local DETAIL="${2:-}"
+  local NOW_EPOCH
+  NOW_EPOCH=$(date +%s)
+  local ELAPSED=$(( NOW_EPOCH - BUILD_START_EPOCH ))
+  local HOURS=$(( ELAPSED / 3600 ))
+  local MINS=$(( (ELAPSED % 3600) / 60 ))
+
+  echo ">>> Progress: ${PHASE} (${HOURS}h${MINS}m elapsed)"
+
+  cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/progress.json" 2>/dev/null || true
+{
+  "revision": "${CHROMIUM_REVISION}",
+  "phase": "${PHASE}",
+  "detail": "${DETAIL}",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "elapsed_seconds": ${ELAPSED},
+  "elapsed_human": "${HOURS}h${MINS}m",
+  "pr_number": ${PR_NUMBER}
+}
+EOF
+}
 
 # Helper: notify GitHub of failure and exit
 notify_failure() {

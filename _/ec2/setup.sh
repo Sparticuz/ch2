@@ -5,6 +5,7 @@
 # Expects from orchestrator: CHROMIUM_REVISION, SCRIPT_DIR, notify_failure, ERR trap
 
 echo "=== Setup: Mount NVMe ==="
+report_progress "setup" "Mounting NVMe and creating swap"
 # c8id.8xlarge has an NVMe instance store at /dev/nvme1n1
 if [ -b /dev/nvme1n1 ]; then
   mkfs -t ext4 -m 0 /dev/nvme1n1
@@ -25,6 +26,7 @@ swapon /srv/swapfile
 echo "Swap enabled: $(swapon --show)"
 
 echo "=== Setup: Install dependencies ==="
+report_progress "setup:packages" "Installing system packages"
 
 # Critical for ThinLTO/official builds — linker will crash without this
 sysctl -w vm.max_map_count=262144
@@ -45,6 +47,7 @@ echo "=== Setup: Create directories ==="
 mkdir -p /srv/{build/chromium,source/chromium,lib}
 
 echo "=== Setup: Sync Chromium source ==="
+report_progress "setup:sync" "Syncing Chromium source (gclient sync)"
 
 # Prepend depot_tools to PATH so it takes priority
 export PATH="/srv/source/depot_tools:$PATH"
@@ -67,6 +70,7 @@ gclient sync --force --reset --delete_unversioned_trees \
 gclient runhooks
 
 echo "=== Setup: Apply patches ==="
+report_progress "setup:patches" "Applying source patches"
 cd /srv/source/chromium/src || exit 1
 
 sed -i -f "$SCRIPT_DIR/patches/sandbox-ipc-failed-polls.sed" \
@@ -88,3 +92,4 @@ echo "Patches applied and verified"
 # Extract Chrome version (available to subsequent scripts via sourcing)
 CHROME_VERSION=$(sed --regexp-extended 's~[^0-9]+~~g' chrome/VERSION | tr '\n' '.' | sed 's~[.]$~~')
 echo "Chrome version: ${CHROME_VERSION}"
+report_progress "setup:complete" "Setup finished, Chrome ${CHROME_VERSION}"

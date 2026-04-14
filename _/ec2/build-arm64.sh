@@ -6,6 +6,7 @@
 #   SCRIPT_DIR, notify_failure, ERR trap, PATH with depot_tools, cwd=/srv/source/chromium/src
 
 echo "=== Build arm64 (cross-compile) ==="
+report_progress "build-arm64:compile" "Cross-compiling arm64 headless_shell"
 mkdir -p out/Headless/arm64
 
 cp "$SCRIPT_DIR/args-arm64.gn" out/Headless/arm64/args.gn
@@ -28,6 +29,7 @@ brotli --best --force /srv/build/chromium/swiftshader.tar
 
 # Upload arm64 artifacts to S3
 echo "Uploading arm64 artifacts..."
+report_progress "build-arm64:upload" "Uploading arm64 artifacts to S3"
 aws s3 cp "/srv/build/chromium/chromium-${CHROME_VERSION}.br" \
   "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64/chromium.br"
 aws s3 cp /srv/build/chromium/swiftshader.tar.br \

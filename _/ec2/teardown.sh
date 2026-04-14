@@ -6,6 +6,7 @@
 #   GITHUB_PAT, GITHUB_REPO, PR_NUMBER, LOG, notify_failure, ERR trap
 
 echo "=== Teardown: Finalize ==="
+report_progress "teardown" "Uploading logs and notifying GitHub"
 
 # Upload fonts (if present — may be pre-built and committed to repo)
 if [ -f /srv/build/chromium/fonts.tar.br ]; then
