@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     name: Launch Chromium EC2 Build
-    if: github.event.label.name == 'binaries:building'
+    if: github.event.label.name == 'binaries:build'
     runs-on: ubuntu-latest
     environment: chromium-build
     timeout-minutes: 15
@@ -76,6 +76,37 @@ jobs:
             echo "use_ssh=false" >> "$GITHUB_OUTPUT"
             echo "SSH: disabled"
           fi
+
+      - name: Update labels and PR checklist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          REPO="${{ github.repository }}"
+
+          # Swap labels: remove trigger + stale states, add building
+          for LABEL in "binaries:build" "binaries:needed" "binaries:failed"; do
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${LABEL}" -X DELETE 2>/dev/null || true
+          done
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" -f "labels[]=binaries:building"
+
+          # Update PR checklist
+          BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq .body)
+
+          CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
+          PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
+
+          NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [ ] Binaries built and uploaded to S3 ← building...
+          - [ ] **Add \`binaries:test\` to run tests**
+          - [ ] Tests and visual regression passed"
+
+          # Replace content between markers
+          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --body "$UPDATED"
 
       - name: Prepare user-data
         id: userdata
