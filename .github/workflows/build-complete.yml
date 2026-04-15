@@ -30,7 +30,7 @@ jobs:
       - name: Handle success
         if: steps.payload.outputs.status == 'success'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
           REVISION: ${{ steps.payload.outputs.revision }}
         run: |
@@ -77,10 +77,27 @@ jobs:
           | arm64 | al2023.tar.br | $(fmt arm64 al2023.tar.br) |
           | shared | fonts.tar.br | ${FONTS_SIZE} |"
 
+          # Update PR checklist
+          BODY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body --jq .body)
+
+          CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
+          PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
+
+          NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [x] Binaries built and uploaded to S3
+          - [ ] **Add \`binaries:test\` to run tests** ← you are here
+          - [ ] Tests and visual regression passed"
+
+          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
+
       - name: Handle failure
         if: steps.payload.outputs.status != 'success'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
           REVISION: ${{ steps.payload.outputs.revision }}
         run: |
@@ -99,6 +116,23 @@ jobs:
           Check the build log in S3 for details.
 
           To retry, remove the \`binaries:failed\` label and re-add \`binaries:building\`."
+
+          # Update PR checklist
+          BODY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body --jq .body)
+
+          CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
+          PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
+
+          NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [ ] ~~Binaries built~~ — **build failed** (add \`binaries:build\` to retry) ← you are here
+          - [ ] **Add \`binaries:test\` to run tests**
+          - [ ] Tests and visual regression passed"
+
+          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
 
       - name: Clean up S3 pending marker
         run: |
