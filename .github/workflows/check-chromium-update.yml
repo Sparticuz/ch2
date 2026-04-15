@@ -77,23 +77,25 @@ jobs:
             | **New revision** | ${{ steps.latest.outputs.revision }} |
             | **Chrome version** | ${{ steps.latest.outputs.version }} |
 
-            ### Next Steps
-
-            1. Review the revision change in `_/ec2/revision.txt`
-            2. When ready, add the `binaries:building` label to trigger the EC2 build
-            3. A maintainer will need to approve the build
-            4. Once the build completes, binaries will be available in S3 and tests will run automatically
-
             ### Build Options
 
-            Add these labels **before** adding `binaries:building`:
+            Add these labels **before** adding `binaries:build`:
 
             | Label | Effect |
             |---|---|
             | `build:ssh` | Enable SSH access + screen session for live monitoring |
             | `build:on-demand` | Use on-demand pricing instead of spot (~3x more expensive) |
 
-            Spot pricing is the default (~70% cheaper). If a spot instance is interrupted, retry by re-adding `binaries:building`.
+            Spot pricing is the default (~70% cheaper). If a spot instance is interrupted, retry by adding `binaries:build` again.
+
+            <!-- checklist-start -->
+            ### Maintainer Checklist
+            - [x] Revision bump detected — `${{ steps.current.outputs.revision }}` → `${{ steps.latest.outputs.revision }}`
+            - [ ] **Add `binaries:build` to start EC2 build** ← you are here
+            - [ ] Binaries built and uploaded to S3
+            - [ ] **Add `binaries:test` to run tests**
+            - [ ] Tests and visual regression passed
+            <!-- checklist-end -->
 
             ---
             *This PR was created automatically by the [Check Chromium Update](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.*
