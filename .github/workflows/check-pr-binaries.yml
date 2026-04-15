@@ -46,21 +46,19 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # If binaries:available is already present, the build completed for
-          # this revision — don't regress to binaries:needed on follow-up pushes
-          if echo "$CURRENT" | grep -qx 'binaries:available'; then
-            echo "binaries:available already present — skipping label update"
+          # If binaries are already verified, don't regress on follow-up pushes
+          if echo "$CURRENT" | grep -qx 'binaries:verified'; then
+            echo "binaries:verified already present — skipping label update"
             exit 0
           fi
 
-          # Remove any existing binaries:* labels (except binaries:needed)
-          while IFS= read -r LABEL; do
-            [ -z "$LABEL" ] && continue
-            if [ "$LABEL" != "binaries:needed" ]; then
+          # Remove all binaries:* labels except binaries:needed
+          for LABEL in binaries:available binaries:building binaries:failed binaries:testing binaries:verified binaries:build binaries:test; do
+            if echo "$CURRENT" | grep -qx "$LABEL"; then
               gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
                 -X DELETE || true
             fi
-          done <<< "$CURRENT"
+          done
 
           # Add binaries:needed if not already present
           if ! echo "$CURRENT" | grep -qx 'binaries:needed'; then
@@ -68,7 +66,7 @@ jobs:
               -f "labels[]=binaries:needed"
           fi
 
-      - name: Update labels (revision unchanged -> binaries:available)
+      - name: Update labels (revision unchanged -> binaries:verified)
         if: steps.check.outputs.revision_changed == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,17 +74,16 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # Remove any non-available binaries:* labels
-          while IFS= read -r LABEL; do
-            [ -z "$LABEL" ] && continue
-            if [ "$LABEL" != "binaries:available" ]; then
+          # Remove all binaries:* labels except binaries:verified
+          for LABEL in binaries:needed binaries:available binaries:building binaries:failed binaries:testing binaries:build binaries:test; do
+            if echo "$CURRENT" | grep -qx "$LABEL"; then
               gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/${LABEL} \
                 -X DELETE || true
             fi
-          done <<< "$CURRENT"
+          done
 
-          # Add binaries:available if not already present
-          if ! echo "$CURRENT" | grep -qx 'binaries:available'; then
+          # Add binaries:verified if not already present
+          if ! echo "$CURRENT" | grep -qx 'binaries:verified'; then
             gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
-              -f "labels[]=binaries:available"
+              -f "labels[]=binaries:verified"
           fi
