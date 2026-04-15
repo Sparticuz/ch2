@@ -242,46 +242,46 @@ s3://{bucket}/{revision}/
 - [ ] Verify: Cleans up `s3://{bucket}/{revision}/pending.json` regardless of
       status.
 
-### 2.6 — test-x64.yml (triggered by `binaries:available` label)
+### 2.6 — test.yml (self-triggering matrix-based test workflow)
 
-**Goal:** Download binaries from S3, build Lambda layer, run tests.
+**Goal:** Download binaries from S3, build Lambda layers, run tests for both x64 and arm64.
 
 - [ ] Verify: Triggers on `pull_request: [opened, synchronize, reopened, labeled]`
-      where PR has `binaries:available` label.
-- [ ] Verify: Also triggers on `push: branches: [master]`.
+      and `push: branches: [master]`.
+- [ ] Verify: `check-binaries` gate job determines if tests should run:
+  - Push to master → always run.
+  - PR labeled `binaries:available` → run.
+  - PR labeled with something else → skip.
+  - PR opened/synchronize/reopened → check if `revision.txt` changed:
+    - Not changed → run (TypeScript-only PR, binaries should exist).
+    - Changed → skip (waiting for build).
 - [ ] Verify: Reads revision from `_/ec2/revision.txt`.
-- [ ] Verify: Downloads x64 binaries from S3:
-  - `aws s3 sync s3://{bucket}/{revision}/x64/ bin/x64/ --exclude "*.json"`
+- [ ] Verify: `build` job uses matrix `arch: [x64, arm64]` with correct runners:
+  - x64 → `ubuntu-latest`
+  - arm64 → `ubuntu-24.04-arm`
+- [ ] Verify: Downloads arch-specific binaries from S3:
+  - `aws s3 sync s3://{bucket}/{revision}/{arch}/ bin/{arch}/ --exclude "*.json"`
   - `aws s3 cp s3://{bucket}/{revision}/fonts.tar.br bin/fonts.tar.br`
-  - Copies x64 files to `bin/` root.
+  - Copies arch files to `bin/` root.
 - [ ] Verify: `npm ci` → `npm run test:source` (unit tests pass).
-- [ ] Verify: Coverage report action runs.
+- [ ] Verify: Coverage report action runs only on x64 leg.
 - [ ] Verify: `npm run build` (TypeScript compiles).
-- [ ] Verify: `make chromium.x64.zip` produces a Lambda layer zip.
+- [ ] Verify: `make chromium.{arch}.zip` produces a Lambda layer zip.
 - [ ] Verify: Layer artifact is uploaded via `actions/upload-artifact`.
 - [ ] Verify **execute** job: Downloads the layer artifact, provisions it to
       `_/amazon/code`, installs `puppeteer-core`, and runs SAM local invoke for
       Node 20, 22, 24 with `example.com.json` event.
+- [ ] Verify: arm64 execute job patches `_/amazon/template.yml` with `sed -i 's/x86_64/arm64/g'`.
 - [ ] Verify: `continue-on-error` is **NOT** present — failures are real failures.
 
-### 2.7 — test-arm.yml (triggered by `binaries:available` label)
-
-Same as test-x64 but:
-
-- [ ] Runs on `ubuntu-24.04-arm` runner.
-- [ ] Downloads arm64 binaries: `aws s3 sync s3://{bucket}/{revision}/arm64/`.
-- [ ] Builds `chromium.arm64.zip`.
-- [ ] Patches `_/amazon/template.yml` with `sed -i 's/x86_64/arm64/g'`.
-- [ ] Runs SAM local invoke on arm64.
-
-### 2.8 — Merge the PR to master
+### 2.7 — Merge the PR to master
 
 - [ ] Both test workflows pass (or are manually verified if S3 has no real
       binaries yet).
 - [ ] The PR has the `chromium-update` label (applied by check-chromium-update).
 - [ ] Merge the PR to `master`.
 
-### 2.9 — prepare-release.yml (triggered by PR merge)
+### 2.8 — prepare-release.yml (triggered by PR merge)
 
 **Goal:** Bump `package.json` version, create a git tag, push.
 
@@ -300,7 +300,7 @@ Same as test-x64 but:
 - [ ] Verify: The push is done with the PAT (not `GITHUB_TOKEN`), so the tag
       push triggers `release.yml`.
 
-### 2.10 — release.yml (triggered by tag push)
+### 2.9 — release.yml (triggered by tag push)
 
 **Goal:** Publish npm packages and create a draft GitHub Release.
 
@@ -344,8 +344,9 @@ A PR that does NOT change `revision.txt` (e.g., docs fix, bug fix).
 - [ ] Verify: It adds `binaries:available` (or leaves it if already present).
 - [ ] Verify: `build-chromium.yml` does NOT trigger (the `binaries:building`
       label was never added).
-- [ ] Verify: `test-x64.yml` and `test-arm.yml` trigger because
-      `binaries:available` was added.
+- [ ] Verify: `test.yml` self-triggers because
+      `binaries:available` was added via PAT, and tests download existing
+      binaries from S3.
 - [ ] Verify: Tests download existing binaries from S3 at the current
       revision in `_/ec2/revision.txt`.
 
@@ -521,7 +522,7 @@ A PR that does NOT change `revision.txt` (e.g., docs fix, bug fix).
 
 ### 7.2 — No continue-on-error in tests
 
-- [ ] Verify: `test-x64.yml` and `test-arm.yml` do NOT contain
+- [ ] Verify: `test.yml` does NOT contain
       `continue-on-error: true` anywhere.
 
 ### 7.3 — Ansible removed
@@ -592,8 +593,7 @@ git push origin feat/infra
 
 - [ ] Open a test PR on `Sparticuz/chromium` that doesn't change `revision.txt`.
 - [ ] Verify `check-pr-binaries.yml` adds `binaries:available`.
-- [ ] Verify `test-x64.yml` triggers and downloads binaries from S3.
-- [ ] Verify `test-arm.yml` triggers and downloads binaries from S3.
+- [ ] Verify `test.yml` triggers and downloads binaries from S3 (both x64 and arm64).
 - [ ] Manually trigger "Check Chromium Update" — verify it runs cleanly.
 - [ ] Manually trigger "Build Safety Net" — verify it runs cleanly.
 
@@ -615,8 +615,7 @@ git push origin feat/infra
 | `build-chromium.yml`        | PR labeled `binaries:building`                  | Launch EC2 instance, fire-and-forget                  |
 | `build-complete.yml`        | `repository_dispatch: build-complete`           | Swap label, comment on PR                             |
 | `build-safety-net.yml`      | Cron daily 12:00 UTC / manual                   | Terminate stale EC2 instances                         |
-| `test-x64.yml`              | PR with `binaries:available` / push to master   | Download x64 binaries, test Lambda                    |
-| `test-arm.yml`              | PR with `binaries:available` / push to master   | Download arm64 binaries, test Lambda                  |
+| `test.yml`                  | PR labeled/opened/sync / push to master         | Download binaries, test Lambda (x64 + arm64)          |
 | `prepare-release.yml`       | PR merged with `chromium-update` label / manual | Bump version, create tag                              |
 | `release.yml`               | Tag push                                        | Publish npm, create GitHub Release                    |
 
@@ -625,18 +624,18 @@ git push origin feat/infra
 | Label added          | Triggers                             |
 | -------------------- | ------------------------------------ |
 | `binaries:building`  | `build-chromium.yml`                 |
-| `binaries:available` | `test-x64.yml`, `test-arm.yml`       |
+| `binaries:available` | `test.yml`                           |
 | `binaries:failed`    | Nothing (manual intervention needed) |
 
 ## Quick reference: Secrets → Workflows map
 
-| Secret                     | Workflows                                                                     |
-| -------------------------- | ----------------------------------------------------------------------------- |
-| `AWS_ACCESS_KEY_ID`        | build-chromium, build-complete, build-safety-net, test-x64, test-arm, release |
-| `AWS_SECRET_ACCESS_KEY`    | (same as above)                                                               |
-| `CHROMIUM_BUILD_S3_BUCKET` | (same as above)                                                               |
-| `NPM_PUBLISH_TOKEN`        | release                                                                       |
-| `RELEASE_TOKEN` (PAT)      | prepare-release, build-chromium                                               |
+| Secret                     | Workflows                                                       |
+| -------------------------- | --------------------------------------------------------------- |
+| `AWS_ACCESS_KEY_ID`        | build-chromium, build-complete, build-safety-net, test, release |
+| `AWS_SECRET_ACCESS_KEY`    | (same as above)                                                 |
+| `CHROMIUM_BUILD_S3_BUCKET` | (same as above)                                                 |
+| `NPM_PUBLISH_TOKEN`        | release                                                         |
+| `RELEASE_TOKEN` (PAT)      | prepare-release, build-chromium                                 |
 
 ## Quick reference: EC2 build script chain
 

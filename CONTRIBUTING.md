@@ -508,8 +508,13 @@ aws s3 rm s3://BUCKET/REVISION/pending.json
 ### Labels added by workflow don't trigger builds
 
 This is by design. GitHub does not trigger workflows from label events caused by
-`GITHUB_TOKEN` (prevents infinite loops). The `binaries:building` label must be
-added manually by a maintainer.
+`GITHUB_TOKEN` (prevents infinite loops). Labels managed by `check-pr-binaries`
+are cosmetic — for maintainer visibility only. The test workflow self-determines
+whether to run by checking if `revision.txt` changed in the PR.
+
+The `binaries:building` label must always be added manually by a maintainer.
+After a build completes, `build-complete.yml` adds `binaries:available` using
+`RELEASE_TOKEN` (a PAT), which does trigger the test workflow.
 
 ### Workflows not visible on Actions tab
 

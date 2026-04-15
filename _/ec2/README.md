@@ -124,20 +124,20 @@ IAM user (or use OIDC federation) with the following policy:
 
 **Where these permissions are used:**
 
-| Permission                                                                                   | Used by                                                               | Purpose                                                      |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `ec2:DescribeVpcs`, `ec2:DescribeSubnets`                                                    | `build-chromium.yml`                                                  | Find default VPC and subnet                                  |
-| `ec2:DescribeSecurityGroups`, `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress` | `build-chromium.yml`                                                  | Create or reuse `chromium-build` SG, add SSH rule            |
-| `ec2:DescribeInstanceTypeOfferings`                                                          | `build-chromium.yml`                                                  | Find AZs supporting the instance type                        |
-| `ec2:RunInstances`, `ec2:CreateTags`                                                         | `build-chromium.yml`                                                  | Launch the build instance                                    |
-| `ec2:DescribeInstances`                                                                      | `build-chromium.yml`, `build-safety-net.yml`                          | Wait for running state; find instances by tag                |
-| `ec2:TerminateInstances`                                                                     | `build-chromium.yml`, `build-safety-net.yml`                          | Emergency teardown; stale build cleanup                      |
-| `ssm:GetParameters`                                                                          | `build-chromium.yml`                                                  | Fetch latest AL2023 AMI ID                                   |
-| `iam:PassRole`                                                                               | `build-chromium.yml`                                                  | Attach `chromium-build` instance profile to EC2              |
-| `s3:PutObject`                                                                               | `build-chromium.yml`                                                  | Upload `pending.json` marker                                 |
-| `s3:GetObject`                                                                               | `build-chromium.yml`, `test-x64.yml`, `test-arm.yml`, `release.yml`   | Download `pending.json` for update; download build artifacts |
-| `s3:DeleteObject`                                                                            | `build-complete.yml`, `build-safety-net.yml`                          | Clean up `pending.json`                                      |
-| `s3:ListBucket`                                                                              | `build-safety-net.yml`, `test-x64.yml`, `test-arm.yml`, `release.yml` | List pending markers; `aws s3 sync`                          |
+| Permission                                                                                   | Used by                                           | Purpose                                                      |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| `ec2:DescribeVpcs`, `ec2:DescribeSubnets`                                                    | `build-chromium.yml`                              | Find default VPC and subnet                                  |
+| `ec2:DescribeSecurityGroups`, `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress` | `build-chromium.yml`                              | Create or reuse `chromium-build` SG, add SSH rule            |
+| `ec2:DescribeInstanceTypeOfferings`                                                          | `build-chromium.yml`                              | Find AZs supporting the instance type                        |
+| `ec2:RunInstances`, `ec2:CreateTags`                                                         | `build-chromium.yml`                              | Launch the build instance                                    |
+| `ec2:DescribeInstances`                                                                      | `build-chromium.yml`, `build-safety-net.yml`      | Wait for running state; find instances by tag                |
+| `ec2:TerminateInstances`                                                                     | `build-chromium.yml`, `build-safety-net.yml`      | Emergency teardown; stale build cleanup                      |
+| `ssm:GetParameters`                                                                          | `build-chromium.yml`                              | Fetch latest AL2023 AMI ID                                   |
+| `iam:PassRole`                                                                               | `build-chromium.yml`                              | Attach `chromium-build` instance profile to EC2              |
+| `s3:PutObject`                                                                               | `build-chromium.yml`                              | Upload `pending.json` marker                                 |
+| `s3:GetObject`                                                                               | `build-chromium.yml`, `test.yml`, `release.yml`   | Download `pending.json` for update; download build artifacts |
+| `s3:DeleteObject`                                                                            | `build-complete.yml`, `build-safety-net.yml`      | Clean up `pending.json`                                      |
+| `s3:ListBucket`                                                                              | `build-safety-net.yml`, `test.yml`, `release.yml` | List pending markers; `aws s3 sync`                          |
 
 ### IAM Instance Profile: `chromium-build`
 
@@ -192,14 +192,14 @@ aws iam add-role-to-instance-profile \
 
 ### GitHub Secrets
 
-| Secret                     | Type                | Required scopes / value                    | Used by                                                                                   |
-| -------------------------- | ------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `AWS_ACCESS_KEY_ID`        | IAM user credential | See IAM user policy above                  | `build-chromium`, `build-complete`, `build-safety-net`, `test-x64`, `test-arm`, `release` |
-| `AWS_SECRET_ACCESS_KEY`    | IAM user credential | Corresponding secret key                   | (same as above)                                                                           |
-| `CHROMIUM_BUILD_S3_BUCKET` | Plain text          | S3 bucket name (not an ARN)                | (same as above)                                                                           |
-| `RELEASE_TOKEN`            | GitHub PAT          | See below                                  | `build-chromium`, `build-complete`, `prepare-release`                                     |
-| `SSH_PUBLIC_KEY`           | Plain text          | SSH public key (e.g. `ssh-ed25519 AAAA…`)  | `build-chromium` (injected into EC2 user-data)                                            |
-| `NPM_PUBLISH_TOKEN`        | npm access token    | `publish` permission on `@sparticuz` scope | `release`                                                                                 |
+| Secret                     | Type                | Required scopes / value                    | Used by                                                                   |
+| -------------------------- | ------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| `AWS_ACCESS_KEY_ID`        | IAM user credential | See IAM user policy above                  | `build-chromium`, `build-complete`, `build-safety-net`, `test`, `release` |
+| `AWS_SECRET_ACCESS_KEY`    | IAM user credential | Corresponding secret key                   | (same as above)                                                           |
+| `CHROMIUM_BUILD_S3_BUCKET` | Plain text          | S3 bucket name (not an ARN)                | (same as above)                                                           |
+| `RELEASE_TOKEN`            | GitHub PAT          | See below                                  | `build-chromium`, `build-complete`, `prepare-release`                     |
+| `SSH_PUBLIC_KEY`           | Plain text          | SSH public key (e.g. `ssh-ed25519 AAAA…`)  | `build-chromium` (injected into EC2 user-data)                            |
+| `NPM_PUBLISH_TOKEN`        | npm access token    | `publish` permission on `@sparticuz` scope | `release`                                                                 |
 
 #### `RELEASE_TOKEN` — GitHub Personal Access Token
 
@@ -212,7 +212,7 @@ This PAT serves three purposes and needs scopes for all:
 
 2. **Label management in `build-complete.yml`**: Labels added by `GITHUB_TOKEN`
    do not trigger downstream workflows. `build-complete.yml` uses this PAT to
-   add `binaries:available`, which triggers `test-x64.yml` and `test-arm.yml`.
+   add `binaries:available`, which triggers `test.yml`.
 
 3. **Tag push in `prepare-release.yml`**: The workflow checks out with this
    PAT so that `git push origin master --follow-tags` triggers `release.yml`.

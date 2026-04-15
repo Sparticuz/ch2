@@ -1,4 +1,4 @@
-name: AWS Lambda CI (x64)
+name: Test
 
 on:
   push:
@@ -7,16 +7,68 @@ on:
     types: [opened, synchronize, reopened, labeled]
 
 jobs:
-  build:
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'binaries:available')
-    name: Build Lambda Layer
+  check-binaries:
+    name: Check Binaries
     runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
     permissions:
-      # Required to checkout the code
       contents: read
-      # Required to put a comment into the pull-request
+    steps:
+      - name: Determine if tests should run
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EVENT="${{ github.event_name }}"
+
+          if [ "$EVENT" = "push" ]; then
+            echo "Push event — running tests"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ACTION="${{ github.event.action }}"
+
+          if [ "$ACTION" = "labeled" ]; then
+            LABEL="${{ github.event.label.name }}"
+            if [ "$LABEL" = "binaries:available" ]; then
+              echo "Label 'binaries:available' added — running tests"
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Label '${LABEL}' is not 'binaries:available' — skipping"
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # opened, synchronize, reopened — check if revision.txt changed
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          CHANGED=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' | grep -c '^_/ec2/revision.txt$' || true)
+
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "revision.txt not changed — running tests"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "revision.txt changed — skipping (binaries may not be ready)"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build & Test (${{ matrix.arch }})
+    needs: check-binaries
+    if: needs.check-binaries.outputs.should_run == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
       pull-requests: write
     steps:
       - name: Checkout
@@ -36,16 +88,16 @@ jobs:
           S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
-          mkdir -p bin/x64 bin/arm64
+          mkdir -p bin/${{ matrix.arch }}
 
-          # Download x64 binaries
-          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" bin/x64/ --exclude "*.json"
+          # Download arch-specific binaries
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" bin/${{ matrix.arch }}/ --exclude "*.json"
 
           # Download fonts
           aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
 
-          # Copy x64 to bin root for tests
-          cp bin/x64/* bin/ 2>/dev/null || true
+          # Copy to bin root for tests
+          cp bin/${{ matrix.arch }}/* bin/ 2>/dev/null || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -58,37 +110,38 @@ jobs:
       - name: Run Source Tests
         run: npm run test:source
 
-      - name: "Report Coverage"
+      - name: Report Coverage
+        if: matrix.arch == 'x64'
         uses: davelosert/vitest-coverage-report-action@v2
 
       - name: Compile Typescript
         run: npm run build
 
       - name: Create Lambda Layer
-        run: make chromium.x64.zip
+        run: make chromium.${{ matrix.arch }}.zip
 
       - name: Upload Layer Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: chromium.x64.zip
-          path: chromium.x64.zip
+          name: chromium.${{ matrix.arch }}.zip
+          path: chromium.${{ matrix.arch }}.zip
 
   execute:
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'binaries:available')
-    name: Lambda (Node ${{ matrix.version }}.x)
+    name: Lambda ${{ matrix.arch }} (Node ${{ matrix.version }}.x)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
-        event:
-          - example.com
-        version:
-          - 20
-          - 22
-          - 24
-
+        arch: [x64, arm64]
+        version: [20, 22, 24]
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -104,25 +157,34 @@ jobs:
       - name: Download Layer Artifact
         uses: actions/download-artifact@v8
         with:
-          name: chromium.x64.zip
+          name: chromium.${{ matrix.arch }}.zip
 
       - name: Provision Layer
-        run: unzip chromium.x64.zip -d _/amazon/code
+        run: unzip chromium.${{ matrix.arch }}.zip -d _/amazon/code
 
       - name: Install test dependencies
         run: npm install --prefix _/amazon/handlers puppeteer-core --bin-links=false --fund=false --omit=optional --omit=dev --package-lock=false --save=false
 
+      - name: Patch template for arm64
+        if: matrix.arch == 'arm64'
+        run: sed -i 's/x86_64/arm64/g' _/amazon/template.yml
+
       - name: Invoke Lambda on SAM
-        run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/${{ matrix.event }}.json node${{ matrix.version }} 2>&1 | (grep 'Error' && exit 1 || exit 0)
+        run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/example.com.json node${{ matrix.version }} 2>&1 | (grep 'Error' && exit 1 || exit 0)
 
   visual-regression:
-    # Only run on PRs (not pushes to master) when binaries are available
-    if: >-
-      github.event_name == 'pull_request' &&
-      contains(github.event.pull_request.labels.*.name, 'binaries:available')
-    name: Visual Regression (x64)
+    name: Visual Regression (${{ matrix.arch }})
     needs: build
-    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
       pull-requests: write
@@ -152,10 +214,10 @@ jobs:
       - name: Download binaries from S3
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
-          mkdir -p bin/x64
-          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" bin/x64/ --exclude "*.json"
+          mkdir -p bin/${{ matrix.arch }}
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" bin/${{ matrix.arch }}/ --exclude "*.json"
           aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
-          cp bin/x64/* bin/ 2>/dev/null || true
+          cp bin/${{ matrix.arch }}/* bin/ 2>/dev/null || true
 
       - name: Install dependencies
         run: |
@@ -168,7 +230,7 @@ jobs:
       - name: Upload current screenshots to S3
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
-          aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/screenshots/" \
+          aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/" \
             --exclude "manifest.json"
 
       - name: Resolve baseline revision
@@ -191,7 +253,7 @@ jobs:
           fi
 
           # Check if baseline screenshots exist in S3
-          if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/example.com.png" >/dev/null 2>&1; then
+          if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${{ matrix.arch }}/example.com.png" >/dev/null 2>&1; then
             echo "Baseline found: ${LATEST_TAG} (revision ${BASELINE_REV})"
             echo "has_baseline=true" >> "$GITHUB_OUTPUT"
             echo "revision=${BASELINE_REV}" >> "$GITHUB_OUTPUT"
@@ -205,7 +267,7 @@ jobs:
         if: steps.baseline.outputs.has_baseline == 'true'
         run: |
           mkdir -p /tmp/screenshots/baseline
-          aws s3 sync "s3://${S3_BUCKET}/${{ steps.baseline.outputs.revision }}/screenshots/" \
+          aws s3 sync "s3://${S3_BUCKET}/${{ steps.baseline.outputs.revision }}/screenshots/${{ matrix.arch }}/" \
             /tmp/screenshots/baseline/ --exclude "*.json" --exclude "*-diff.png"
 
       - name: Run odiff comparison
@@ -239,7 +301,7 @@ jobs:
           done
 
           echo "results<<EOF" >> "$GITHUB_OUTPUT"
-          echo -e "$DIFF_RESULTS" >> "$GITHUB_OUTPUT"
+          printf '%b' "$DIFF_RESULTS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Upload diff images to S3
@@ -247,7 +309,7 @@ jobs:
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
           if ls /tmp/screenshots/diff/*-diff.png 1>/dev/null 2>&1; then
-            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/screenshots/" \
+            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/" \
               --exclude "*" --include "*-diff.png"
           fi
 
@@ -260,22 +322,24 @@ jobs:
           URLS=""
 
           for PAGE in example.com webgl; do
-            CURRENT_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${PAGE}.png" --expires-in 604800)
-            URLS="${URLS}${PAGE}_current=${CURRENT_URL}\n"
+            # Sanitize dots for bash variable names (example.com -> example_com)
+            SAFE="${PAGE//./_}"
+            CURRENT_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/${PAGE}.png" --expires-in 604800)
+            URLS="${URLS}${SAFE}_current=${CURRENT_URL}\n"
 
             if [ "$HAS_BASELINE" = "true" ] && [ -n "$BASELINE_REV" ]; then
-              BASELINE_URL=$(aws s3 presign "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${PAGE}.png" --expires-in 604800) || true
-              URLS="${URLS}${PAGE}_baseline=${BASELINE_URL}\n"
+              BASELINE_URL=$(aws s3 presign "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${{ matrix.arch }}/${PAGE}.png" --expires-in 604800) || true
+              URLS="${URLS}${SAFE}_baseline=${BASELINE_URL}\n"
 
               if [ -f "/tmp/screenshots/diff/${PAGE}-diff.png" ]; then
-                DIFF_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${PAGE}-diff.png" --expires-in 604800) || true
-                URLS="${URLS}${PAGE}_diff=${DIFF_URL}\n"
+                DIFF_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/${PAGE}-diff.png" --expires-in 604800) || true
+                URLS="${URLS}${SAFE}_diff=${DIFF_URL}\n"
               fi
             fi
           done
 
           # Write URLs to a file (too large for GITHUB_OUTPUT)
-          echo -e "$URLS" > /tmp/screenshots/urls.txt
+          printf '%b' "$URLS" > /tmp/screenshots/urls.txt
 
       - name: Post PR comment
         env:
@@ -325,7 +389,7 @@ jobs:
             WEBGL_IMG_ROW="${WEBGL_IMG_ROW} |"
 
             cat > /tmp/screenshots/comment.md <<EOF
-          ## Visual Regression (x64)
+          ## Visual Regression (${{ matrix.arch }})
 
           Baseline: \`${BASELINE_TAG}\` | Current revision: \`${REVISION}\`
 
@@ -354,7 +418,7 @@ jobs:
           EOF
           else
             cat > /tmp/screenshots/comment.md <<EOF
-          ## Visual Regression (x64)
+          ## Visual Regression (${{ matrix.arch }})
 
           No baseline screenshots found — first capture for revision \`${REVISION}\`.
 
