@@ -198,7 +198,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # Need tags for baseline resolution
+          fetch-depth: 0 # Need origin/master for baseline resolution
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -239,28 +239,26 @@ jobs:
       - name: Resolve baseline revision
         id: baseline
         run: |
-          # Find the latest release tag
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No tags found — no baseline"
+          # Read master's revision as the baseline
+          BASELINE_REV=$(git show origin/master:_/ec2/revision.txt 2>/dev/null || echo "")
+          if [ -z "$BASELINE_REV" ]; then
+            echo "Could not read revision.txt from master"
             echo "has_baseline=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Read the revision from that tag
-          BASELINE_REV=$(git show "${LATEST_TAG}:_/ec2/revision.txt" 2>/dev/null || echo "")
-          if [ -z "$BASELINE_REV" ]; then
-            echo "Could not read revision.txt from ${LATEST_TAG}"
+          CURRENT_REV="${{ steps.revision.outputs.revision }}"
+          if [ "$BASELINE_REV" = "$CURRENT_REV" ]; then
+            echo "Current revision matches master — no baseline comparison needed"
             echo "has_baseline=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Check if baseline screenshots exist in S3
           if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${{ matrix.arch }}/example.com.png" >/dev/null 2>&1; then
-            echo "Baseline found: ${LATEST_TAG} (revision ${BASELINE_REV})"
+            echo "Baseline found: master (revision ${BASELINE_REV})"
             echo "has_baseline=true" >> "$GITHUB_OUTPUT"
             echo "revision=${BASELINE_REV}" >> "$GITHUB_OUTPUT"
-            echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
           else
             echo "No baseline screenshots in S3 for ${BASELINE_REV}"
             echo "has_baseline=false" >> "$GITHUB_OUTPUT"
@@ -349,7 +347,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HAS_BASELINE: ${{ steps.baseline.outputs.has_baseline }}
-          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
           MANIFEST=$(cat /tmp/screenshots/current/manifest.json)
@@ -394,7 +391,7 @@ jobs:
             cat > /tmp/screenshots/comment.md <<EOF
           ## Visual Regression (${{ matrix.arch }})
 
-          Baseline: \`${BASELINE_TAG}\` | Current revision: \`${REVISION}\`
+          Baseline: \`master\` | Current revision: \`${REVISION}\`
 
           | Page | Baseline | Current | Diff |
           |------|----------|---------|------|
