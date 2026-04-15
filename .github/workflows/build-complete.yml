@@ -83,10 +83,13 @@ jobs:
           CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
           PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
 
+          X64_SIZE=$(fmt x64 chromium.br)
+          ARM64_SIZE=$(fmt arm64 chromium.br)
+
           NEW_CHECKLIST="### Maintainer Checklist
           - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
           - [x] Build started
-          - [x] Binaries built and uploaded to S3
+          - [x] Binaries built and uploaded to S3 (x64: ${X64_SIZE}, arm64: ${ARM64_SIZE})
           - [ ] **Add \`binaries:test\` to run tests** ← you are here
           - [ ] Tests and visual regression passed"
 
@@ -115,7 +118,7 @@ jobs:
 
           Check the build log in S3 for details.
 
-          To retry, remove the \`binaries:failed\` label and re-add \`binaries:building\`."
+          To retry, add the \`binaries:build\` label."
 
           # Update PR checklist
           BODY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body --jq .body)
