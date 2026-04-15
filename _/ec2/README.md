@@ -7,13 +7,18 @@ headless_shell for x64 and arm64. The instance self-terminates on completion.
 
 ## Build Process
 
-1. GHA workflow launches EC2 with `build-chromium.sh` embedded in user-data
-2. Instance schedules 8-hour self-destruct (`shutdown -h +480`)
-3. Installs dependencies, syncs Chromium source, applies patches
-4. Builds x64 headless_shell natively, then cross-compiles arm64
-5. Strips, brotli-compresses, uploads artifacts to S3
-6. Sends `repository_dispatch` event to GitHub
-7. Instance shuts down (terminates via `instance_initiated_shutdown_behavior`)
+1. GHA workflow builds `fonts.tar.br` and uploads to S3
+2. GHA workflow launches EC2 with `build-chromium.sh` embedded in user-data
+3. Instance schedules 8-hour self-destruct (`shutdown -h +480`)
+4. Installs dependencies, syncs Chromium source, applies patches
+5. Builds x64 headless_shell natively, then cross-compiles arm64
+6. Strips, brotli-compresses, uploads artifacts to S3
+7. Sends `repository_dispatch` event to GitHub
+8. Instance shuts down (terminates via `instance_initiated_shutdown_behavior`)
+
+In parallel with step 2, the workflow also launches a small arm64 instance
+(`m8g.medium`) that packages native AL2023 system libraries for arm64. This
+runs `build-arm64-libs.sh` and takes ~5 minutes.
 
 ## Build Options
 
@@ -47,18 +52,19 @@ aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
 
 ## Script Layout
 
-| File                | Purpose                                                                         |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `build-chromium.sh` | Orchestrator: self-destruct, logging, validation, ERR trap, sources sub-scripts |
-| `setup.sh`          | NVMe mount, swap, sysctl, dnf install, depot_tools, gclient sync, patches       |
-| `build-x64.sh`      | gn gen, autoninja, strip, brotli, AL2023 libs, S3 upload for x64                |
-| `build-arm64.sh`    | sysroot, gn gen, autoninja, llvm-strip, brotli, S3 upload for arm64             |
-| `teardown.sh`       | Fonts upload, log scrub+upload, completed.json, repository_dispatch, shutdown   |
-| `args-x64.gn`       | Static GN build args for x64                                                    |
-| `args-arm64.gn`     | Static GN build args for arm64                                                  |
-| `patches/*.sed`     | sed scripts applied to Chromium source                                          |
-| `.gclient`          | gclient configuration                                                           |
-| `revision.txt`      | Chromium revision number                                                        |
+| File                  | Purpose                                                                         |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `build-chromium.sh`   | Orchestrator: self-destruct, logging, validation, ERR trap, sources sub-scripts |
+| `setup.sh`            | NVMe mount, swap, sysctl, dnf install, depot_tools, gclient sync, patches       |
+| `build-x64.sh`        | gn gen, autoninja, strip, brotli, AL2023 libs, S3 upload for x64                |
+| `build-arm64.sh`      | sysroot, gn gen, autoninja, llvm-strip, brotli, S3 upload for arm64             |
+| `build-arm64-libs.sh` | Standalone script for arm64 AL2023 system lib packaging (runs on m8g.medium)    |
+| `teardown.sh`         | Log scrub+upload, completed.json, repository_dispatch, shutdown                 |
+| `args-x64.gn`         | Static GN build args for x64                                                    |
+| `args-arm64.gn`       | Static GN build args for arm64                                                  |
+| `patches/*.sed`       | sed scripts applied to Chromium source                                          |
+| `.gclient`            | gclient configuration                                                           |
+| `revision.txt`        | Chromium revision number                                                        |
 
 ## AWS Prerequisites (one-time setup)
 
@@ -191,29 +197,34 @@ aws iam add-role-to-instance-profile \
 | `AWS_ACCESS_KEY_ID`        | IAM user credential | See IAM user policy above                  | `build-chromium`, `build-complete`, `build-safety-net`, `test-x64`, `test-arm`, `release` |
 | `AWS_SECRET_ACCESS_KEY`    | IAM user credential | Corresponding secret key                   | (same as above)                                                                           |
 | `CHROMIUM_BUILD_S3_BUCKET` | Plain text          | S3 bucket name (not an ARN)                | (same as above)                                                                           |
-| `RELEASE_TOKEN`            | GitHub PAT          | See below                                  | `build-chromium`, `prepare-release`                                                       |
+| `RELEASE_TOKEN`            | GitHub PAT          | See below                                  | `build-chromium`, `build-complete`, `prepare-release`                                     |
 | `SSH_PUBLIC_KEY`           | Plain text          | SSH public key (e.g. `ssh-ed25519 AAAA…`)  | `build-chromium` (injected into EC2 user-data)                                            |
 | `NPM_PUBLISH_TOKEN`        | npm access token    | `publish` permission on `@sparticuz` scope | `release`                                                                                 |
 
 #### `RELEASE_TOKEN` — GitHub Personal Access Token
 
-This PAT serves two purposes and needs scopes for both:
+This PAT serves three purposes and needs scopes for all:
 
 1. **`repository_dispatch` from EC2** (`build-chromium.yml` → EC2 → `teardown.sh`):
    The EC2 instance calls `POST /repos/{owner}/{repo}/dispatches` to trigger
    `build-complete.yml` on success or failure. This requires **`contents:write`**
    on the repository.
 
-2. **Tag push in `prepare-release.yml`**: The workflow checks out with this
+2. **Label management in `build-complete.yml`**: Labels added by `GITHUB_TOKEN`
+   do not trigger downstream workflows. `build-complete.yml` uses this PAT to
+   add `binaries:available`, which triggers `test-x64.yml` and `test-arm.yml`.
+
+3. **Tag push in `prepare-release.yml`**: The workflow checks out with this
    PAT so that `git push origin master --follow-tags` triggers `release.yml`.
    Pushes made with the default `GITHUB_TOKEN` do not trigger downstream
    workflows. This also requires **`contents:write`**.
 
 **Minimum scopes for a fine-grained PAT:**
 
-| Scope            | Reason                               |
-| ---------------- | ------------------------------------ |
-| `contents:write` | `repository_dispatch` API + tag push |
+| Scope            | Reason                                         |
+| ---------------- | ---------------------------------------------- |
+| `contents:write` | `repository_dispatch` API + tag push           |
+| `issues:write`   | Label management that triggers other workflows |
 
 **If using a classic PAT:** the `repo` scope covers both needs.
 

@@ -116,3 +116,262 @@ jobs:
 
       - name: Invoke Lambda on SAM
         run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/${{ matrix.event }}.json node${{ matrix.version }} 2>&1 | (grep 'Error' && exit 1 || exit 0)
+
+  visual-regression:
+    # Only run on PRs (not pushes to master) when binaries are available
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'binaries:available')
+    name: Visual Regression (arm64)
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # Need tags for baseline resolution
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(cat _/ec2/revision.txt)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries from S3
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          mkdir -p bin/arm64
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/arm64/" bin/arm64/ --exclude "*.json"
+          aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
+          cp bin/arm64/* bin/ 2>/dev/null || true
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm install --no-save odiff-bin
+
+      - name: Take screenshots
+        run: node tools/visual-regression.mjs /tmp/screenshots/current
+
+      - name: Upload current screenshots to S3
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/screenshots/" \
+            --exclude "manifest.json"
+
+      - name: Resolve baseline revision
+        id: baseline
+        run: |
+          # Find the latest release tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No tags found — no baseline"
+            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Read the revision from that tag
+          BASELINE_REV=$(git show "${LATEST_TAG}:_/ec2/revision.txt" 2>/dev/null || echo "")
+          if [ -z "$BASELINE_REV" ]; then
+            echo "Could not read revision.txt from ${LATEST_TAG}"
+            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if baseline screenshots exist in S3
+          if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/example.com.png" >/dev/null 2>&1; then
+            echo "Baseline found: ${LATEST_TAG} (revision ${BASELINE_REV})"
+            echo "has_baseline=true" >> "$GITHUB_OUTPUT"
+            echo "revision=${BASELINE_REV}" >> "$GITHUB_OUTPUT"
+            echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No baseline screenshots in S3 for ${BASELINE_REV}"
+            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download baseline screenshots
+        if: steps.baseline.outputs.has_baseline == 'true'
+        run: |
+          mkdir -p /tmp/screenshots/baseline
+          aws s3 sync "s3://${S3_BUCKET}/${{ steps.baseline.outputs.revision }}/screenshots/" \
+            /tmp/screenshots/baseline/ --exclude "*.json" --exclude "*-diff.png"
+
+      - name: Run odiff comparison
+        if: steps.baseline.outputs.has_baseline == 'true'
+        id: diff
+        run: |
+          mkdir -p /tmp/screenshots/diff
+          DIFF_RESULTS=""
+
+          for PAGE in example.com webgl; do
+            BASELINE="/tmp/screenshots/baseline/${PAGE}.png"
+            CURRENT="/tmp/screenshots/current/${PAGE}.png"
+            DIFF_OUT="/tmp/screenshots/diff/${PAGE}-diff.png"
+
+            if [ ! -f "$BASELINE" ]; then
+              DIFF_RESULTS="${DIFF_RESULTS}${PAGE}|no-baseline|0|0\n"
+              continue
+            fi
+
+            # Run odiff — exit code 0=match, 1=diff, 2=error
+            RESULT=$(npx odiff "$BASELINE" "$CURRENT" "$DIFF_OUT" 2>&1) || true
+            DIFF_COUNT=$(echo "$RESULT" | grep -oP 'diffCount:\s*\K\d+' || echo "0")
+            DIFF_PCT=$(echo "$RESULT" | grep -oP 'diffPercentage:\s*\K[\d.]+' || echo "0")
+
+            # Check if diff image was created (only created if pixels differ)
+            if [ -f "$DIFF_OUT" ]; then
+              DIFF_RESULTS="${DIFF_RESULTS}${PAGE}|changed|${DIFF_COUNT}|${DIFF_PCT}\n"
+            else
+              DIFF_RESULTS="${DIFF_RESULTS}${PAGE}|match|0|0.00\n"
+            fi
+          done
+
+          echo "results<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$DIFF_RESULTS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Upload diff images to S3
+        if: steps.baseline.outputs.has_baseline == 'true'
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          if ls /tmp/screenshots/diff/*-diff.png 1>/dev/null 2>&1; then
+            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/screenshots/" \
+              --exclude "*" --include "*-diff.png"
+          fi
+
+      - name: Generate presigned URLs
+        id: urls
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          BASELINE_REV="${{ steps.baseline.outputs.revision }}"
+          HAS_BASELINE="${{ steps.baseline.outputs.has_baseline }}"
+          URLS=""
+
+          for PAGE in example.com webgl; do
+            CURRENT_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${PAGE}.png" --expires-in 604800)
+            URLS="${URLS}${PAGE}_current=${CURRENT_URL}\n"
+
+            if [ "$HAS_BASELINE" = "true" ] && [ -n "$BASELINE_REV" ]; then
+              BASELINE_URL=$(aws s3 presign "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${PAGE}.png" --expires-in 604800) || true
+              URLS="${URLS}${PAGE}_baseline=${BASELINE_URL}\n"
+
+              if [ -f "/tmp/screenshots/diff/${PAGE}-diff.png" ]; then
+                DIFF_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${PAGE}-diff.png" --expires-in 604800) || true
+                URLS="${URLS}${PAGE}_diff=${DIFF_URL}\n"
+              fi
+            fi
+          done
+
+          # Write URLs to a file (too large for GITHUB_OUTPUT)
+          echo -e "$URLS" > /tmp/screenshots/urls.txt
+
+      - name: Post PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HAS_BASELINE: ${{ steps.baseline.outputs.has_baseline }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          MANIFEST=$(cat /tmp/screenshots/current/manifest.json)
+
+          # Parse URLs into env vars
+          while IFS='=' read -r KEY VAL; do
+            [ -n "$KEY" ] && export "URL_${KEY}=${VAL}"
+          done < /tmp/screenshots/urls.txt
+
+          # Read current hashes
+          EXAMPLE_HASH=$(echo "$MANIFEST" | jq -r '.["example.com"].hash')
+          WEBGL_HASH=$(echo "$MANIFEST" | jq -r '.webgl.hash')
+
+          if [ "$HAS_BASELINE" = "true" ]; then
+            BASELINE_MANIFEST=$(cat /tmp/screenshots/baseline/manifest.json 2>/dev/null || echo '{}')
+            BASELINE_EXAMPLE_HASH=$(echo "$BASELINE_MANIFEST" | jq -r '.["example.com"].hash // "n/a"')
+            BASELINE_WEBGL_HASH=$(echo "$BASELINE_MANIFEST" | jq -r '.webgl.hash // "n/a"')
+
+            # Determine status
+            EXAMPLE_STATUS="Match"
+            if [ "$EXAMPLE_HASH" != "$BASELINE_EXAMPLE_HASH" ]; then EXAMPLE_STATUS="Changed"; fi
+            WEBGL_STATUS="Match"
+            if [ "$WEBGL_HASH" != "$BASELINE_WEBGL_HASH" ]; then WEBGL_STATUS="Changed"; fi
+
+            # Build image table rows
+            EXAMPLE_IMG_ROW="| example.com | ![baseline](${URL_example_com_baseline}) | ![current](${URL_example_com_current})"
+            if [ -n "${URL_example_com_diff:-}" ]; then
+              EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} | ![diff](${URL_example_com_diff})"
+            else
+              EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} | (identical)"
+            fi
+            EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} |"
+
+            WEBGL_IMG_ROW="| WebGL | ![baseline](${URL_webgl_baseline}) | ![current](${URL_webgl_current})"
+            if [ -n "${URL_webgl_diff:-}" ]; then
+              WEBGL_IMG_ROW="${WEBGL_IMG_ROW} | ![diff](${URL_webgl_diff})"
+            else
+              WEBGL_IMG_ROW="${WEBGL_IMG_ROW} | (identical)"
+            fi
+            WEBGL_IMG_ROW="${WEBGL_IMG_ROW} |"
+
+            cat > /tmp/screenshots/comment.md <<EOF
+          ## Visual Regression (arm64)
+
+          Baseline: \`${BASELINE_TAG}\` | Current revision: \`${REVISION}\`
+
+          | Page | Baseline | Current | Diff |
+          |------|----------|---------|------|
+          ${EXAMPLE_IMG_ROW}
+          ${WEBGL_IMG_ROW}
+
+          | Page | Baseline Hash | Current Hash | Status |
+          |------|--------------|--------------|--------|
+          | example.com | \`${BASELINE_EXAMPLE_HASH:0:16}...\` | \`${EXAMPLE_HASH:0:16}...\` | ${EXAMPLE_STATUS} |
+          | WebGL | \`${BASELINE_WEBGL_HASH:0:16}...\` | \`${WEBGL_HASH:0:16}...\` | ${WEBGL_STATUS} |
+
+          <details><summary>Full hashes</summary>
+
+          | Page | Hash |
+          |------|------|
+          | example.com (baseline) | \`${BASELINE_EXAMPLE_HASH}\` |
+          | example.com (current) | \`${EXAMPLE_HASH}\` |
+          | WebGL (baseline) | \`${BASELINE_WEBGL_HASH}\` |
+          | WebGL (current) | \`${WEBGL_HASH}\` |
+
+          </details>
+
+          *Presigned URLs expire in 7 days.*
+          EOF
+          else
+            cat > /tmp/screenshots/comment.md <<EOF
+          ## Visual Regression (arm64)
+
+          No baseline screenshots found — first capture for revision \`${REVISION}\`.
+
+          | Page | Screenshot |
+          |------|-----------|
+          | example.com | ![current](${URL_example_com_current}) |
+          | WebGL | ![current](${URL_webgl_current}) |
+
+          | Page | Hash |
+          |------|------|
+          | example.com | \`${EXAMPLE_HASH}\` |
+          | WebGL | \`${WEBGL_HASH}\` |
+
+          *Presigned URLs expire in 7 days.*
+          EOF
+          fi
+
+          gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/comment.md

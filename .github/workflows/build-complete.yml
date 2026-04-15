@@ -30,7 +30,7 @@ jobs:
       - name: Handle success
         if: steps.payload.outputs.status == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
           REVISION: ${{ steps.payload.outputs.revision }}
         run: |
@@ -49,12 +49,13 @@ jobs:
           | Architecture | Artifacts |
           |---|---|
           | x64 | chromium.br, swiftshader.tar.br, al2023.tar.br |
-          | arm64 | chromium.br, swiftshader.tar.br |"
+          | arm64 | chromium.br, swiftshader.tar.br, al2023.tar.br |
+          | shared | fonts.tar.br |"
 
       - name: Handle failure
         if: steps.payload.outputs.status != 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
           REVISION: ${{ steps.payload.outputs.revision }}
         run: |

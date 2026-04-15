@@ -8,12 +8,6 @@
 echo "=== Teardown: Finalize ==="
 report_progress "teardown" "Uploading logs and notifying GitHub"
 
-# Upload fonts (if present — may be pre-built and committed to repo)
-if [ -f /srv/build/chromium/fonts.tar.br ]; then
-  aws s3 cp /srv/build/chromium/fonts.tar.br \
-    "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/fonts.tar.br"
-fi
-
 # Scrub secrets from build log before upload
 sed -i "s/${GITHUB_PAT}/[REDACTED]/g" "$LOG" 2>/dev/null || true
 

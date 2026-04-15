@@ -1,120 +1,153 @@
-name: AWS Lambda CI (x64)
+# Visual Regression Implementation Plan
 
-on:
-  push:
-    branches: [master]
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-jobs:
-  build:
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'binaries:available')
-    name: Build Lambda Layer
-    runs-on: ubuntu-latest
-    permissions:
-      # Required to checkout the code
-      contents: read
-      # Required to put a comment into the pull-request
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+**Goal:** After integration tests, post a PR comment with side-by-side screenshot comparisons (baseline vs current vs diff) using odiff and S3 presigned URLs.
 
-      - name: Get chromium revision
-        id: revision
-        run: |
-          REVISION=$(cat _/ec2/revision.txt)
-          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+**Architecture:** A new `visual-regression` job in both test workflows runs Chromium directly on the GHA runner (not in SAM), takes screenshots of example.com and get.webgl.org, compares against the previous release's screenshots stored in S3 using odiff, uploads all images to S3, and posts a PR comment with presigned URLs and hash comparison.
 
-      - name: Download binaries from S3
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1
-          S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
-        run: |
-          REVISION="${{ steps.revision.outputs.revision }}"
-          mkdir -p bin/x64 bin/arm64
+**Tech Stack:** odiff-bin (installed ad-hoc in workflow), puppeteer-core (already a devDependency), AWS CLI for S3, gh CLI for PR comments.
 
-          # Download x64 binaries
-          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" bin/x64/ --exclude "*.json"
+---
 
-          # Download fonts
-          aws s3 cp "s3://${S3_BUCKET}/${REVISION}/fonts.tar.br" bin/fonts.tar.br || true
+### Task 1: Create the screenshot script
 
-          # Copy x64 to bin root for tests
-          cp bin/x64/* bin/ 2>/dev/null || true
+**Files:**
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24.x
+- Create: `tools/visual-regression.mjs`
 
-      - name: Install Packages
-        run: npm ci
+This Node.js script takes screenshots of the two test pages using the Chromium binary from `bin/`, computes SHA-256 hashes, and writes PNGs + a JSON manifest to an output directory.
 
-      - name: Run Source Tests
-        run: npm run test:source
+**Step 1: Create `tools/visual-regression.mjs`**
 
-      - name: "Report Coverage"
-        uses: davelosert/vitest-coverage-report-action@v2
+```javascript
+#!/usr/bin/env node
+// tools/visual-regression.mjs
+// Takes screenshots of test pages using the packaged Chromium binary.
+// Usage: node tools/visual-regression.mjs <output-dir>
+//
+// Writes to <output-dir>/:
+//   example.com.png   — screenshot of https://example.com
+//   webgl.png         — screenshot of https://get.webgl.org (logo removed)
+//   manifest.json     — { "example.com": { hash: "..." }, "webgl": { hash: "..." } }
 
-      - name: Compile Typescript
-        run: npm run build
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import puppeteer from "puppeteer-core";
+import chromium from "@sparticuz/chromium";
 
-      - name: Create Lambda Layer
-        run: make chromium.x64.zip
+const OUTPUT_DIR = process.argv[2];
+if (!OUTPUT_DIR) {
+  console.error("Usage: node tools/visual-regression.mjs <output-dir>");
+  process.exit(1);
+}
 
-      - name: Upload Layer Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: chromium.x64.zip
-          path: chromium.x64.zip
+await mkdir(OUTPUT_DIR, { recursive: true });
 
-  execute:
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'binaries:available')
-    name: Lambda (Node ${{ matrix.version }}.x)
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        event:
-          - example.com
-        version:
-          - 20
-          - 22
-          - 24
+const pages = [
+  {
+    name: "example.com",
+    url: "https://example.com",
+  },
+  {
+    name: "webgl",
+    url: "https://get.webgl.org",
+    remove: "logo-container",
+  },
+];
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+const browser = await puppeteer.launch({
+  args: puppeteer.defaultArgs({
+    args: chromium.args,
+    headless: "shell",
+  }),
+  defaultViewport: {
+    deviceScaleFactor: 1,
+    hasTouch: false,
+    height: 1080,
+    isLandscape: true,
+    isMobile: false,
+    width: 1920,
+  },
+  executablePath: await chromium.executablePath(),
+  headless: "shell",
+});
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: 3.13
+console.log("Chromium version:", await browser.version());
 
-      - name: Setup AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+const manifest = {};
 
-      - name: Download Layer Artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: chromium.x64.zip
+for (const job of pages) {
+  const page = await browser.newPage();
+  await page.goto(job.url, { waitUntil: ["domcontentloaded", "load"] });
 
-      - name: Provision Layer
-        run: unzip chromium.x64.zip -d _/amazon/code
+  if (job.remove) {
+    await page.evaluate((selector) => {
+      document.getElementById(selector)?.remove();
+    }, job.remove);
+  }
 
-      - name: Install test dependencies
-        run: npm install --prefix _/amazon/handlers puppeteer-core --bin-links=false --fund=false --omit=optional --omit=dev --package-lock=false --save=false
+  const screenshot = Buffer.from(await page.screenshot());
+  const pngPath = join(OUTPUT_DIR, `${job.name}.png`);
+  await writeFile(pngPath, screenshot);
 
-      - name: Invoke Lambda on SAM
-        run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/${{ matrix.event }}.json node${{ matrix.version }} 2>&1 | (grep 'Error' && exit 1 || exit 0)
+  // Hash matches the existing test approach: hash the data URI string
+  const base64 = `data:image/png;base64,${screenshot.toString("base64")}`;
+  const hash = createHash("sha256").update(base64).digest("hex");
 
+  manifest[job.name] = { hash };
+  console.log(`${job.name}: ${hash}`);
+  await page.close();
+}
+
+await writeFile(
+  join(OUTPUT_DIR, "manifest.json"),
+  JSON.stringify(manifest, null, 2),
+);
+
+for (const page of await browser.pages()) {
+  await page.close();
+}
+await browser.close();
+
+console.log(`Screenshots saved to ${OUTPUT_DIR}`);
+```
+
+**Step 2: Verify the script runs locally (manual, optional)**
+
+```bash
+# Requires binaries in bin/
+node tools/visual-regression.mjs /tmp/vr-test
+ls /tmp/vr-test/
+cat /tmp/vr-test/manifest.json
+```
+
+**Step 3: Commit**
+
+```bash
+git add tools/visual-regression.mjs
+git commit -m "feat: add visual regression screenshot script"
+```
+
+---
+
+### Task 2: Add visual-regression job to test-x64.yml
+
+**Files:**
+
+- Modify: `.github/workflows/test-x64.yml`
+
+Add a new `visual-regression` job that depends on the `build` job. It downloads
+the layer artifact, unpacks it, installs puppeteer-core and odiff-bin, runs the
+screenshot script, downloads baseline from S3, runs odiff, uploads everything
+to S3, and posts a PR comment.
+
+**Step 1: Add the visual-regression job**
+
+After the existing `execute` job in `test-x64.yml`, add:
+
+```yaml
   visual-regression:
     # Only run on PRs (not pushes to master) when binaries are available
     if: >-
@@ -136,7 +169,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # Need tags for baseline resolution
+          fetch-depth: 0  # Need tags for baseline resolution
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -287,10 +320,10 @@ jobs:
           REVISION="${{ steps.revision.outputs.revision }}"
           MANIFEST=$(cat /tmp/screenshots/current/manifest.json)
 
-          # Parse URLs into env vars
-          while IFS='=' read -r KEY VAL; do
-            [ -n "$KEY" ] && export "URL_${KEY}=${VAL}"
-          done < /tmp/screenshots/urls.txt
+          # Parse URLs
+          source <(sed 's/=/ /' /tmp/screenshots/urls.txt | while read KEY VAL; do
+            echo "export URL_${KEY}=\"${VAL}\""
+          done)
 
           # Read current hashes
           EXAMPLE_HASH=$(echo "$MANIFEST" | jq -r '.["example.com"].hash')
@@ -324,52 +357,124 @@ jobs:
             fi
             WEBGL_IMG_ROW="${WEBGL_IMG_ROW} |"
 
-            cat > /tmp/screenshots/comment.md <<EOF
-          ## Visual Regression (x64)
+            BODY="## Visual Regression (x64)
 
-          Baseline: \`${BASELINE_TAG}\` | Current revision: \`${REVISION}\`
+Baseline: \`${BASELINE_TAG}\` | Current revision: \`${REVISION}\`
 
-          | Page | Baseline | Current | Diff |
-          |------|----------|---------|------|
-          ${EXAMPLE_IMG_ROW}
-          ${WEBGL_IMG_ROW}
+| Page | Baseline | Current | Diff |
+|------|----------|---------|------|
+${EXAMPLE_IMG_ROW}
+${WEBGL_IMG_ROW}
 
-          | Page | Baseline Hash | Current Hash | Status |
-          |------|--------------|--------------|--------|
-          | example.com | \`${BASELINE_EXAMPLE_HASH:0:16}...\` | \`${EXAMPLE_HASH:0:16}...\` | ${EXAMPLE_STATUS} |
-          | WebGL | \`${BASELINE_WEBGL_HASH:0:16}...\` | \`${WEBGL_HASH:0:16}...\` | ${WEBGL_STATUS} |
+| Page | Baseline Hash | Current Hash | Status |
+|------|--------------|--------------|--------|
+| example.com | \`${BASELINE_EXAMPLE_HASH:0:16}...\` | \`${EXAMPLE_HASH:0:16}...\` | ${EXAMPLE_STATUS} |
+| WebGL | \`${BASELINE_WEBGL_HASH:0:16}...\` | \`${WEBGL_HASH:0:16}...\` | ${WEBGL_STATUS} |
 
-          <details><summary>Full hashes</summary>
+<details><summary>Full hashes</summary>
 
-          | Page | Hash |
-          |------|------|
-          | example.com (baseline) | \`${BASELINE_EXAMPLE_HASH}\` |
-          | example.com (current) | \`${EXAMPLE_HASH}\` |
-          | WebGL (baseline) | \`${BASELINE_WEBGL_HASH}\` |
-          | WebGL (current) | \`${WEBGL_HASH}\` |
+| Page | Hash |
+|------|------|
+| example.com (baseline) | \`${BASELINE_EXAMPLE_HASH}\` |
+| example.com (current) | \`${EXAMPLE_HASH}\` |
+| WebGL (baseline) | \`${BASELINE_WEBGL_HASH}\` |
+| WebGL (current) | \`${WEBGL_HASH}\` |
 
-          </details>
+</details>
 
-          *Presigned URLs expire in 7 days.*
-          EOF
+*Presigned URLs expire in 7 days.*"
           else
-            cat > /tmp/screenshots/comment.md <<EOF
-          ## Visual Regression (x64)
+            BODY="## Visual Regression (x64)
 
-          No baseline screenshots found — first capture for revision \`${REVISION}\`.
+No baseline screenshots found — first capture for revision \`${REVISION}\`.
 
-          | Page | Screenshot |
-          |------|-----------|
-          | example.com | ![current](${URL_example_com_current}) |
-          | WebGL | ![current](${URL_webgl_current}) |
+| Page | Screenshot |
+|------|-----------|
+| example.com | ![current](${URL_example_com_current}) |
+| WebGL | ![current](${URL_webgl_current}) |
 
-          | Page | Hash |
-          |------|------|
-          | example.com | \`${EXAMPLE_HASH}\` |
-          | WebGL | \`${WEBGL_HASH}\` |
+| Page | Hash |
+|------|------|
+| example.com | \`${EXAMPLE_HASH}\` |
+| WebGL | \`${WEBGL_HASH}\` |
 
-          *Presigned URLs expire in 7 days.*
-          EOF
+*Presigned URLs expire in 7 days.*"
           fi
 
-          gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/comment.md
+          gh pr comment "$PR_NUMBER" --body "$BODY"
+```
+
+**Step 2: Commit**
+
+```bash
+git add .github/workflows/test-x64.yml
+git commit -m "feat: add visual regression job to x64 test workflow"
+```
+
+---
+
+### Task 3: Add visual-regression job to test-arm.yml
+
+**Files:**
+
+- Modify: `.github/workflows/test-arm.yml`
+
+Same job as Task 2, adapted for arm64:
+
+- Runs on `ubuntu-24.04-arm`
+- Downloads arm64 binaries instead of x64
+- PR comment header says "Visual Regression (arm64)"
+
+**Step 1: Add the visual-regression job (same structure as x64, with arm64 changes)**
+
+The job is identical to Task 2 except:
+
+- `runs-on: ubuntu-24.04-arm`
+- S3 sync from `arm64/` instead of `x64/`
+- `cp bin/arm64/* bin/`
+- Comment title: `## Visual Regression (arm64)`
+
+**Step 2: Commit**
+
+```bash
+git add .github/workflows/test-arm.yml
+git commit -m "feat: add visual regression job to arm64 test workflow"
+```
+
+---
+
+### Task 4: Update design doc and CONTRIBUTING.md
+
+**Files:**
+
+- Modify: `CONTRIBUTING.md`
+- Update: `docs/plans/2026-04-14-visual-regression-design.md` (mark as implemented)
+
+**Step 1: Add a section to CONTRIBUTING.md under Build System about visual regression**
+
+Add after the "Safety Net" section:
+
+```markdown
+### Visual Regression
+
+When the test workflows run on a PR with `binaries:available`, a visual
+regression job takes screenshots of `example.com` and `get.webgl.org` using the
+new Chromium binary, compares them against the previous release's screenshots
+using [odiff](https://github.com/dmtrKovalenko/odiff), and posts a PR comment
+with:
+
+- Side-by-side images (baseline, current, diff) via S3 presigned URLs
+- SHA-256 hashes for each screenshot
+- Match/changed status
+
+This is informational only — visual changes don't block the workflow. If hashes
+changed, update the expected values in `_/amazon/events/example.com.json` and
+in `tests/chromium.test.ts`.
+```
+
+**Step 2: Commit**
+
+```bash
+git add CONTRIBUTING.md docs/plans/2026-04-14-visual-regression-design.md
+git commit -m "docs: add visual regression section to CONTRIBUTING.md"
+```

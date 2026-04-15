@@ -27,9 +27,10 @@ don't touch the build system, skip to [Development Workflow](#development-workfl
     - [Build Options](#build-options)
     - [Monitoring a Build](#monitoring-a-build)
     - [Safety Net](#safety-net)
+    - [Visual Regression](#visual-regression)
   - [Release Process](#release-process)
   - [Troubleshooting](#troubleshooting)
-    - [Build fails with "No subnet found in an AZ that supports c8id.8xlarge"](#build-fails-with-no-subnet-found-in-an-az-that-supports-c8id8xlarge)
+    - [Build fails with "No subnet found in an AZ that supports c8id.4xlarge"](#build-fails-with-no-subnet-found-in-an-az-that-supports-c8id4xlarge)
     - [Spot instance interrupted mid-build](#spot-instance-interrupted-mid-build)
     - [Build marked as stale by safety net but still running](#build-marked-as-stale-by-safety-net-but-still-running)
     - [`pending.json` orphaned in S3](#pendingjson-orphaned-in-s3)
@@ -73,10 +74,11 @@ REVISION/
   x64/
     chromium.br          # brotli-compressed headless_shell
     swiftshader.tar.br   # SwiftShader libraries
-    al2023.tar.br        # AL2023 system libraries
+    al2023.tar.br        # AL2023 system libraries (x64)
   arm64/
     chromium.br
     swiftshader.tar.br
+    al2023.tar.br        # AL2023 system libraries (arm64, from m8g.medium)
 ```
 
 ### 2. IAM Role for EC2 (Instance Profile)
@@ -279,14 +281,17 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `SSH_PUBLIC_KEY`           | Contents of `~/.ssh/chromium-build.pub`          |
 | `NPM_PUBLISH_TOKEN`        | npm granular access token for `@sparticuz` scope |
 
-**`RELEASE_TOKEN`** — a GitHub Personal Access Token used for two things:
+**`RELEASE_TOKEN`** — a GitHub Personal Access Token used for three things:
 
 1. `repository_dispatch` from EC2 to trigger `build-complete.yml`
-2. Tag push in `prepare-release.yml` to trigger `release.yml`
+2. Adding labels in `build-complete.yml` (labels added by `GITHUB_TOKEN` don't
+   trigger downstream workflows; the PAT ensures `binaries:available` triggers
+   the test workflows)
+3. Tag push in `prepare-release.yml` to trigger `release.yml`
 
-Both require `contents:write` scope. For a **fine-grained PAT**, grant
-`contents:write` on this repository only. For a **classic PAT**, the `repo` scope
-covers both.
+All require `contents:write` scope. For a **fine-grained PAT**, grant
+`contents:write` and `issues:write` on this repository only. For a **classic
+PAT**, the `repo` scope covers everything.
 
 **`NPM_PUBLISH_TOKEN`** — create a granular access token on npmjs.com:
 
@@ -356,15 +361,18 @@ a new stable Chromium version is available. To update manually:
 The build runs entirely on EC2, with no SSH or long-lived GitHub runner connection.
 
 1. Adding the `binaries:building` label triggers `build-chromium.yml`.
-2. The workflow packages the `_/ec2/` directory into user-data, launches a
-   `c8id.8xlarge` instance, comments on the PR, and exits (~2 minutes).
-3. The EC2 instance boots, extracts the build scripts, schedules an 8-hour
+2. The workflow builds `fonts.tar.br` on the GHA runner and uploads to S3.
+3. The workflow packages the `_/ec2/` directory into user-data, launches a
+   `c8id.4xlarge` instance, comments on the PR, and exits (~2 minutes).
+4. In parallel, a small arm64 instance (`m8g.medium`) launches to package
+   native AL2023 system libraries for arm64 (~5 minutes).
+5. The main EC2 instance boots, extracts the build scripts, schedules an 8-hour
    self-destruct, and runs the build.
-4. Build scripts execute in order: `setup.sh` → `build-x64.sh` →
+6. Build scripts execute in order: `setup.sh` → `build-x64.sh` →
    `build-arm64.sh` → `teardown.sh`.
-5. On completion (success or failure), the instance uploads results to S3, sends
+7. On completion (success or failure), the instance uploads results to S3, sends
    a `repository_dispatch` event to trigger `build-complete.yml`, and shuts down.
-6. `build-complete.yml` updates PR labels and comments with the result.
+8. `build-complete.yml` updates PR labels and comments with the result.
 
 ### Label Lifecycle
 
@@ -426,6 +434,22 @@ GitHub issue documenting what happened.
 
 You can also trigger it manually from the Actions tab.
 
+### Visual Regression
+
+When the test workflows run on a PR with `binaries:available`, a visual
+regression job takes screenshots of `example.com` and `get.webgl.org` using the
+new Chromium binary, compares them against the previous release's screenshots
+using [odiff](https://github.com/dmtrKovalenko/odiff), and posts a PR comment
+with:
+
+- Side-by-side images (baseline, current, diff) via S3 presigned URLs
+- SHA-256 hashes for each screenshot
+- Match/changed status
+
+This is informational only — visual changes don't block the workflow. If hashes
+changed, update the expected values in `_/amazon/events/example.com.json` and
+in `tests/chromium.test.ts`.
+
 ## Release Process
 
 Releases are manual, triggered across two workflows:
@@ -443,7 +467,7 @@ After `release.yml` completes, review and publish the draft release on GitHub.
 
 ## Troubleshooting
 
-### Build fails with "No subnet found in an AZ that supports c8id.8xlarge"
+### Build fails with "No subnet found in an AZ that supports c8id.4xlarge"
 
 The instance type is not available in all availability zones. The workflow handles
 this automatically by querying `DescribeInstanceTypeOfferings`, but if the default
@@ -453,7 +477,7 @@ support the instance type:
 ```bash
 aws ec2 describe-instance-type-offerings \
   --location-type availability-zone \
-  --filters "Name=instance-type,Values=c8id.8xlarge" \
+  --filters "Name=instance-type,Values=c8id.4xlarge" \
   --query 'InstanceTypeOfferings[].Location'
 ```
 
