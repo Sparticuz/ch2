@@ -465,3 +465,227 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/comment.md
           fi
+
+  cross-arch-comparison:
+    name: Cross-Architecture Comparison
+    needs: visual-regression
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+
+      - name: Install odiff
+        run: npm install --no-save odiff-bin
+
+      - name: Get chromium revision
+        id: revision
+        run: |
+          REVISION=$(cat _/ec2/revision.txt)
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download screenshots from S3
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          mkdir -p /tmp/screenshots/x64 /tmp/screenshots/arm64
+
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/x64/" /tmp/screenshots/x64/ \
+            --exclude "*" --include "*.png" --exclude "*-diff.png"
+          aws s3 sync "s3://${S3_BUCKET}/${REVISION}/arm64/" /tmp/screenshots/arm64/ \
+            --exclude "*" --include "*.png" --exclude "*-diff.png"
+
+      - name: Read hashes from manifest
+        id: hashes
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          MANIFEST=$(aws s3 cp "s3://${S3_BUCKET}/${REVISION}/manifest.json" - 2>/dev/null || echo '{}')
+
+          X64_EXAMPLE=$(echo "$MANIFEST" | jq -r '.x64.screenshots["example.com"] // "n/a"')
+          X64_WEBGL=$(echo "$MANIFEST" | jq -r '.x64.screenshots.webgl // "n/a"')
+          ARM64_EXAMPLE=$(echo "$MANIFEST" | jq -r '.arm64.screenshots["example.com"] // "n/a"')
+          ARM64_WEBGL=$(echo "$MANIFEST" | jq -r '.arm64.screenshots.webgl // "n/a"')
+
+          echo "x64_example=${X64_EXAMPLE}" >> "$GITHUB_OUTPUT"
+          echo "x64_webgl=${X64_WEBGL}" >> "$GITHUB_OUTPUT"
+          echo "arm64_example=${ARM64_EXAMPLE}" >> "$GITHUB_OUTPUT"
+          echo "arm64_webgl=${ARM64_WEBGL}" >> "$GITHUB_OUTPUT"
+
+          # Determine hash match status
+          if [ "$X64_EXAMPLE" = "$ARM64_EXAMPLE" ]; then
+            echo "example_hash_match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "example_hash_match=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$X64_WEBGL" = "$ARM64_WEBGL" ]; then
+            echo "webgl_hash_match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "webgl_hash_match=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run odiff cross-arch comparison
+        id: diff
+        run: |
+          mkdir -p /tmp/screenshots/cross-diff
+          RESULTS=""
+
+          for PAGE in example.com webgl; do
+            X64="/tmp/screenshots/x64/${PAGE}.png"
+            ARM64="/tmp/screenshots/arm64/${PAGE}.png"
+            DIFF_OUT="/tmp/screenshots/cross-diff/${PAGE}-cross-diff.png"
+
+            if [ ! -f "$X64" ] || [ ! -f "$ARM64" ]; then
+              RESULTS="${RESULTS}${PAGE}|missing|0|0\n"
+              continue
+            fi
+
+            # Run odiff — exit code 0=match, 1=diff, 2=error
+            RESULT=$(npx odiff "$X64" "$ARM64" "$DIFF_OUT" 2>&1) || true
+            DIFF_COUNT=$(echo "$RESULT" | grep -oP 'diffCount:\s*\K\d+' || echo "0")
+            DIFF_PCT=$(echo "$RESULT" | grep -oP 'diffPercentage:\s*\K[\d.]+' || echo "0")
+
+            if [ -f "$DIFF_OUT" ]; then
+              RESULTS="${RESULTS}${PAGE}|changed|${DIFF_COUNT}|${DIFF_PCT}\n"
+            else
+              RESULTS="${RESULTS}${PAGE}|match|0|0.00\n"
+            fi
+          done
+
+          echo "results<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%b' "$RESULTS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Upload cross-arch diff images to S3
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          if ls /tmp/screenshots/cross-diff/*-cross-diff.png 1>/dev/null 2>&1; then
+            aws s3 sync /tmp/screenshots/cross-diff/ "s3://${S3_BUCKET}/${REVISION}/cross-arch/" \
+              --exclude "*" --include "*-cross-diff.png"
+          fi
+
+      - name: Generate pre-signed URLs
+        id: urls
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          URLS=""
+          EXPIRES=604800  # 7 days
+
+          presign() {
+            local S3_KEY="$1" VAR_NAME="$2"
+            URL=$(aws s3 presign "s3://${S3_BUCKET}/${S3_KEY}" --expires-in "$EXPIRES" 2>/dev/null) || return 1
+            URLS="${URLS}${VAR_NAME}=${URL}\n"
+          }
+
+          for PAGE in example.com webgl; do
+            SAFE="${PAGE//./_}"
+            presign "${REVISION}/x64/${PAGE}.png" "${SAFE}_x64" || true
+            presign "${REVISION}/arm64/${PAGE}.png" "${SAFE}_arm64" || true
+            if [ -f "/tmp/screenshots/cross-diff/${PAGE}-cross-diff.png" ]; then
+              presign "${REVISION}/cross-arch/${PAGE}-cross-diff.png" "${SAFE}_diff" || true
+            fi
+          done
+
+          printf '%b' "$URLS" > /tmp/screenshots/urls.txt
+
+      - name: Post PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+
+          # Parse URLs into env vars
+          while IFS='=' read -r KEY VAL; do
+            [ -n "$KEY" ] && export "URL_${KEY}=${VAL}"
+          done < /tmp/screenshots/urls.txt
+
+          # Read hash comparison results
+          EXAMPLE_HASH_MATCH="${{ steps.hashes.outputs.example_hash_match }}"
+          WEBGL_HASH_MATCH="${{ steps.hashes.outputs.webgl_hash_match }}"
+          X64_EXAMPLE="${{ steps.hashes.outputs.x64_example }}"
+          X64_WEBGL="${{ steps.hashes.outputs.x64_webgl }}"
+          ARM64_EXAMPLE="${{ steps.hashes.outputs.arm64_example }}"
+          ARM64_WEBGL="${{ steps.hashes.outputs.arm64_webgl }}"
+
+          # Determine status emoji/text
+          if [ "$EXAMPLE_HASH_MATCH" = "true" ]; then
+            EXAMPLE_STATUS="Match"
+          else
+            EXAMPLE_STATUS="Differs"
+          fi
+          if [ "$WEBGL_HASH_MATCH" = "true" ]; then
+            WEBGL_STATUS="Match"
+          else
+            WEBGL_STATUS="Differs"
+          fi
+
+          # Build image table rows
+          EXAMPLE_IMG_ROW="| example.com | ![x64](${URL_example_com_x64}) | ![arm64](${URL_example_com_arm64})"
+          if [ -n "${URL_example_com_diff:-}" ]; then
+            EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} | ![diff](${URL_example_com_diff})"
+          else
+            EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} | (identical)"
+          fi
+          EXAMPLE_IMG_ROW="${EXAMPLE_IMG_ROW} |"
+
+          WEBGL_IMG_ROW="| WebGL | ![x64](${URL_webgl_x64}) | ![arm64](${URL_webgl_arm64})"
+          if [ -n "${URL_webgl_diff:-}" ]; then
+            WEBGL_IMG_ROW="${WEBGL_IMG_ROW} | ![diff](${URL_webgl_diff})"
+          else
+            WEBGL_IMG_ROW="${WEBGL_IMG_ROW} | (identical)"
+          fi
+          WEBGL_IMG_ROW="${WEBGL_IMG_ROW} |"
+
+          cat > /tmp/screenshots/cross-comment.md <<EOF
+          ## Cross-Architecture Comparison
+
+          Revision: \`${REVISION}\` | Comparing x64 vs arm64
+
+          | Page | x64 | arm64 | Diff |
+          |------|-----|-------|------|
+          ${EXAMPLE_IMG_ROW}
+          ${WEBGL_IMG_ROW}
+
+          | Page | x64 Hash | arm64 Hash | Status |
+          |------|----------|------------|--------|
+          | example.com | \`${X64_EXAMPLE:0:16}...\` | \`${ARM64_EXAMPLE:0:16}...\` | ${EXAMPLE_STATUS} |
+          | WebGL | \`${X64_WEBGL:0:16}...\` | \`${ARM64_WEBGL:0:16}...\` | ${WEBGL_STATUS} |
+
+          <details><summary>Full hashes</summary>
+
+          | Page | Arch | Hash |
+          |------|------|------|
+          | example.com | x64 | \`${X64_EXAMPLE}\` |
+          | example.com | arm64 | \`${ARM64_EXAMPLE}\` |
+          | WebGL | x64 | \`${X64_WEBGL}\` |
+          | WebGL | arm64 | \`${ARM64_WEBGL}\` |
+
+          </details>
+          EOF
+
+          # Find existing cross-arch comment and update it, or create new
+          MARKER="## Cross-Architecture Comparison"
+          EXISTING_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"${MARKER}\"))) | .id" \
+            | tail -1)
+
+          if [ -n "$EXISTING_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${EXISTING_ID}" \
+              -X PATCH -F "body=@/tmp/screenshots/cross-comment.md"
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/cross-comment.md
+          fi
