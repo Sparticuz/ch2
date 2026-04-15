@@ -193,6 +193,8 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
       S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+      UPLOAD_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      REPO_ID: ${{ github.repository_id }}
 
     steps:
       - name: Checkout
@@ -314,7 +316,7 @@ jobs:
               --exclude "*" --include "*-diff.png"
           fi
 
-      - name: Generate presigned URLs
+      - name: Upload images to GitHub
         id: urls
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
@@ -322,24 +324,71 @@ jobs:
           HAS_BASELINE="${{ steps.baseline.outputs.has_baseline }}"
           URLS=""
 
+          upload_image() {
+            local FILE="$1"
+            local NAME="$2"
+
+            if [ ! -f "$FILE" ]; then
+              return 1
+            fi
+
+            local FILE_SIZE CONTENT_TYPE POLICY UPLOAD_URL ASSET_HREF FORM_ARGS
+            FILE_SIZE=$(stat -c%s "$FILE")
+            CONTENT_TYPE="image/png"
+
+            # Step 1: Get upload policy
+            POLICY=$(curl -sf -X POST \
+              -H "Authorization: token ${UPLOAD_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "https://github.com/upload/policies/assets" \
+              -d "{\"name\":\"${NAME}\",\"size\":${FILE_SIZE},\"content_type\":\"${CONTENT_TYPE}\",\"repository_id\":${REPO_ID}}") || {
+              echo "::warning::Failed to get upload policy for ${NAME}" >&2
+              return 1
+            }
+
+            UPLOAD_URL=$(echo "$POLICY" | jq -r '.upload_url')
+            ASSET_HREF=$(echo "$POLICY" | jq -r '.asset.href')
+
+            # Step 2: Upload file using pre-signed form fields
+            FORM_ARGS=""
+            for key in $(echo "$POLICY" | jq -r '.form | keys[]'); do
+              val=$(echo "$POLICY" | jq -r ".form[\"$key\"]")
+              FORM_ARGS="$FORM_ARGS -F $key=$val"
+            done
+
+            eval curl -sf -X POST $FORM_ARGS -F "file=@${FILE};type=${CONTENT_TYPE}" "$UPLOAD_URL" > /dev/null || {
+              echo "::warning::Failed to upload ${NAME}" >&2
+              return 1
+            }
+
+            echo "$ASSET_HREF"
+          }
+
           for PAGE in example.com webgl; do
-            # Sanitize dots for bash variable names (example.com -> example_com)
             SAFE="${PAGE//./_}"
-            CURRENT_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/${PAGE}.png" --expires-in 604800)
-            URLS="${URLS}${SAFE}_current=${CURRENT_URL}\n"
+
+            # Upload current screenshot
+            URL=$(upload_image "/tmp/screenshots/current/${PAGE}.png" "${PAGE}-current-${{ matrix.arch }}.png")
+            if [ -n "$URL" ]; then
+              URLS="${URLS}${SAFE}_current=${URL}\n"
+            fi
 
             if [ "$HAS_BASELINE" = "true" ] && [ -n "$BASELINE_REV" ]; then
-              BASELINE_URL=$(aws s3 presign "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${{ matrix.arch }}/${PAGE}.png" --expires-in 604800) || true
-              URLS="${URLS}${SAFE}_baseline=${BASELINE_URL}\n"
+              # Upload baseline screenshot
+              URL=$(upload_image "/tmp/screenshots/baseline/${PAGE}.png" "${PAGE}-baseline-${{ matrix.arch }}.png")
+              if [ -n "$URL" ]; then
+                URLS="${URLS}${SAFE}_baseline=${URL}\n"
+              fi
 
-              if [ -f "/tmp/screenshots/diff/${PAGE}-diff.png" ]; then
-                DIFF_URL=$(aws s3 presign "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/${PAGE}-diff.png" --expires-in 604800) || true
-                URLS="${URLS}${SAFE}_diff=${DIFF_URL}\n"
+              # Upload diff image if it exists
+              URL=$(upload_image "/tmp/screenshots/diff/${PAGE}-diff.png" "${PAGE}-diff-${{ matrix.arch }}.png")
+              if [ -n "$URL" ]; then
+                URLS="${URLS}${SAFE}_diff=${URL}\n"
               fi
             fi
           done
 
-          # Write URLs to a file (too large for GITHUB_OUTPUT)
           printf '%b' "$URLS" > /tmp/screenshots/urls.txt
 
       - name: Post PR comment
@@ -413,8 +462,6 @@ jobs:
           | WebGL (current) | \`${WEBGL_HASH}\` |
 
           </details>
-
-          *Presigned URLs expire in 7 days.*
           EOF
           else
             cat > /tmp/screenshots/comment.md <<EOF
@@ -431,8 +478,6 @@ jobs:
           |------|------|
           | example.com | \`${EXAMPLE_HASH}\` |
           | WebGL | \`${WEBGL_HASH}\` |
-
-          *Presigned URLs expire in 7 days.*
           EOF
           fi
 
