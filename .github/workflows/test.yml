@@ -235,7 +235,7 @@ jobs:
       - name: Upload current screenshots to S3
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
-          aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/" \
+          aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" \
             --exclude "manifest.json"
 
       - name: Resolve baseline revision
@@ -257,7 +257,7 @@ jobs:
           fi
 
           # Check if baseline screenshots exist in S3
-          if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/screenshots/${{ matrix.arch }}/example.com.png" >/dev/null 2>&1; then
+          if aws s3 ls "s3://${S3_BUCKET}/${BASELINE_REV}/${{ matrix.arch }}/example.com.png" >/dev/null 2>&1; then
             echo "Baseline found: master (revision ${BASELINE_REV})"
             echo "has_baseline=true" >> "$GITHUB_OUTPUT"
             echo "revision=${BASELINE_REV}" >> "$GITHUB_OUTPUT"
@@ -270,8 +270,8 @@ jobs:
         if: steps.baseline.outputs.has_baseline == 'true'
         run: |
           mkdir -p /tmp/screenshots/baseline
-          aws s3 sync "s3://${S3_BUCKET}/${{ steps.baseline.outputs.revision }}/screenshots/${{ matrix.arch }}/" \
-            /tmp/screenshots/baseline/ --exclude "*.json" --exclude "*-diff.png"
+          aws s3 sync "s3://${S3_BUCKET}/${{ steps.baseline.outputs.revision }}/${{ matrix.arch }}/" \
+            /tmp/screenshots/baseline/ --exclude "*.json" --exclude "*-diff.png" --exclude "*.br"
 
       - name: Run odiff comparison
         if: steps.baseline.outputs.has_baseline == 'true'
@@ -312,7 +312,7 @@ jobs:
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
           if ls /tmp/screenshots/diff/*-diff.png 1>/dev/null 2>&1; then
-            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/screenshots/${{ matrix.arch }}/" \
+            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" \
               --exclude "*" --include "*-diff.png"
           fi
 
