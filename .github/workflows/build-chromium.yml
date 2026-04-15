@@ -96,6 +96,11 @@ jobs:
           CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
           PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
 
+          if [ -z "$CURRENT_REV" ] || [ -z "$PREV_REV" ]; then
+            echo "::warning::Could not extract revision numbers from PR body — skipping checklist update"
+            exit 0
+          fi
+
           NEW_CHECKLIST="### Maintainer Checklist
           - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
           - [x] Build started
@@ -104,7 +109,7 @@ jobs:
           - [ ] Tests and visual regression passed"
 
           # Replace content between markers
-          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+          UPDATED=$(echo "$BODY" | NEW_CHECKLIST="$NEW_CHECKLIST" perl -0777 -pe 's|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n$ENV{NEW_CHECKLIST}\n<!-- checklist-end -->|s')
 
           gh pr edit "$PR_NUMBER" --repo "$REPO" --body "$UPDATED"
 

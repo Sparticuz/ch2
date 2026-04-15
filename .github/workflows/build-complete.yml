@@ -22,10 +22,16 @@ jobs:
     steps:
       - name: Parse payload
         id: payload
+        env:
+          PAYLOAD_REVISION: ${{ github.event.client_payload.revision }}
+          PAYLOAD_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          PAYLOAD_STATUS: ${{ github.event.client_payload.status }}
+          PAYLOAD_ERROR: ${{ github.event.client_payload.error }}
         run: |
-          echo "revision=${{ github.event.client_payload.revision }}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
-          echo "status=${{ github.event.client_payload.status }}" >> "$GITHUB_OUTPUT"
+          echo "revision=${PAYLOAD_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PAYLOAD_PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "status=${PAYLOAD_STATUS}" >> "$GITHUB_OUTPUT"
+          echo "error=${PAYLOAD_ERROR}" >> "$GITHUB_OUTPUT"
 
       - name: Handle success
         if: steps.payload.outputs.status == 'success'
@@ -83,6 +89,11 @@ jobs:
           CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
           PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
 
+          if [ -z "$CURRENT_REV" ] || [ -z "$PREV_REV" ]; then
+            echo "::warning::Could not extract revision numbers from PR body — skipping checklist update"
+            exit 0
+          fi
+
           X64_SIZE=$(fmt x64 chromium.br)
           ARM64_SIZE=$(fmt arm64 chromium.br)
 
@@ -93,7 +104,7 @@ jobs:
           - [ ] **Add \`binaries:test\` to run tests** ← you are here
           - [ ] Tests and visual regression passed"
 
-          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+          UPDATED=$(echo "$BODY" | NEW_CHECKLIST="$NEW_CHECKLIST" perl -0777 -pe 's|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n$ENV{NEW_CHECKLIST}\n<!-- checklist-end -->|s')
 
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
 
@@ -103,6 +114,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
           REVISION: ${{ steps.payload.outputs.revision }}
+          BUILD_STATUS: ${{ steps.payload.outputs.status }}
+          BUILD_ERROR: ${{ steps.payload.outputs.error }}
         run: |
           # Remove binaries:building, add binaries:failed
           gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels/binaries:building \
@@ -113,8 +126,8 @@ jobs:
           gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "## Build Failed
 
           Chromium revision \`${REVISION}\` build failed.
-          Status: \`${{ github.event.client_payload.status }}\`
-          Error: \`${{ github.event.client_payload.error }}\`
+          Status: \`${BUILD_STATUS}\`
+          Error: \`${BUILD_ERROR}\`
 
           Check the build log in S3 for details.
 
@@ -126,6 +139,11 @@ jobs:
           CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
           PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
 
+          if [ -z "$CURRENT_REV" ] || [ -z "$PREV_REV" ]; then
+            echo "::warning::Could not extract revision numbers from PR body — skipping checklist update"
+            exit 0
+          fi
+
           NEW_CHECKLIST="### Maintainer Checklist
           - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
           - [x] Build started
@@ -133,7 +151,7 @@ jobs:
           - [ ] **Add \`binaries:test\` to run tests**
           - [ ] Tests and visual regression passed"
 
-          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+          UPDATED=$(echo "$BODY" | NEW_CHECKLIST="$NEW_CHECKLIST" perl -0777 -pe 's|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n$ENV{NEW_CHECKLIST}\n<!-- checklist-end -->|s')
 
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
 
