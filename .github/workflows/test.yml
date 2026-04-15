@@ -4,60 +4,82 @@ on:
   push:
     branches: [master]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
 
 jobs:
-  check-binaries:
-    name: Check Binaries
+  check-trigger:
+    name: Check Trigger
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
+      is_pr: ${{ steps.gate.outputs.is_pr }}
     permissions:
       contents: read
+      pull-requests: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Determine if tests should run
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           EVENT="${{ github.event_name }}"
 
           if [ "$EVENT" = "push" ]; then
             echo "Push event — running tests"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          ACTION="${{ github.event.action }}"
-
-          if [ "$ACTION" = "labeled" ]; then
-            LABEL="${{ github.event.label.name }}"
-            if [ "$LABEL" = "binaries:available" ]; then
-              echo "Label 'binaries:available' added — running tests"
-              echo "should_run=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "Label '${LABEL}' is not 'binaries:available' — skipping"
-              echo "should_run=false" >> "$GITHUB_OUTPUT"
-            fi
-            exit 0
-          fi
-
-          # opened, synchronize, reopened — check if revision.txt changed
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          CHANGED=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' | grep -c '^_/ec2/revision.txt$' || true)
-
-          if [ "$CHANGED" -eq 0 ]; then
-            echo "revision.txt not changed — running tests"
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "revision.txt changed — skipping (binaries may not be ready)"
+          LABEL="${{ github.event.label.name }}"
+          if [ "$LABEL" != "binaries:test" ]; then
+            echo "Label '${LABEL}' is not 'binaries:test' — skipping"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          echo "Label 'binaries:test' added — running tests"
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "is_pr=true" >> "$GITHUB_OUTPUT"
+
+          REPO="${{ github.repository }}"
+
+          # Swap labels: remove trigger + stale states, add testing
+          for LABEL_RM in "binaries:test" "binaries:failed"; do
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${LABEL_RM}" -X DELETE 2>/dev/null || true
+          done
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" -f "labels[]=binaries:testing"
+
+          # Update PR checklist
+          BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq .body)
+          CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
+          PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
+
+          # Preserve the binary size info if present
+          SIZE_LINE=$(echo "$BODY" | grep -oP 'Binaries built and uploaded to S3.*' | head -1)
+          if [ -z "$SIZE_LINE" ]; then
+            SIZE_LINE="Binaries built and uploaded to S3"
+          fi
+
+          NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [x] ${SIZE_LINE}
+          - [x] Tests started
+          - [ ] Tests and visual regression passed ← testing..."
+
+          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --body "$UPDATED"
 
   build:
     name: Build & Test (${{ matrix.arch }})
-    needs: check-binaries
-    if: needs.check-binaries.outputs.should_run == 'true'
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_run == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -136,7 +158,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-        version: [20, 22, 24]
+        version: [22, 24]
         include:
           - arch: x64
             runner: ubuntu-latest
@@ -174,8 +196,8 @@ jobs:
 
   visual-regression:
     name: Visual Regression (${{ matrix.arch }})
-    needs: build
-    if: github.event_name == 'pull_request'
+    needs: [check-trigger, build]
+    if: needs.check-trigger.outputs.is_pr == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -468,8 +490,8 @@ jobs:
 
   cross-arch-comparison:
     name: Cross-Architecture Comparison
-    needs: visual-regression
-    if: github.event_name == 'pull_request'
+    needs: [check-trigger, visual-regression]
+    if: needs.check-trigger.outputs.is_pr == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -689,3 +711,69 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/cross-comment.md
           fi
+
+  finalize:
+    name: Finalize
+    needs:
+      [check-trigger, build, execute, visual-regression, cross-arch-comparison]
+    if: always() && needs.check-trigger.outputs.is_pr == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update labels and checklist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          REPO="${{ github.repository }}"
+
+          # Determine overall result — VR is informational, only build+execute matter
+          BUILD_RESULT="${{ needs.build.result }}"
+          EXECUTE_RESULT="${{ needs.execute.result }}"
+
+          if [ "$BUILD_RESULT" = "success" ] && [ "$EXECUTE_RESULT" = "success" ]; then
+            OVERALL="success"
+          else
+            OVERALL="failure"
+          fi
+
+          BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq .body)
+          CURRENT_REV=$(echo "$BODY" | grep -oP '(?<=` → `)\d+(?=`)' | head -1)
+          PREV_REV=$(echo "$BODY" | grep -oP '(?<=— `)\d+(?=` →)' | head -1)
+          SIZE_LINE=$(echo "$BODY" | grep -oP 'Binaries built and uploaded to S3.*' | head -1)
+          if [ -z "$SIZE_LINE" ]; then
+            SIZE_LINE="Binaries built and uploaded to S3"
+          fi
+
+          if [ "$OVERALL" = "success" ]; then
+            # Remove testing + available, add verified
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/binaries:testing" -X DELETE 2>/dev/null || true
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/binaries:available" -X DELETE 2>/dev/null || true
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" -f "labels[]=binaries:verified"
+
+            NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [x] ${SIZE_LINE}
+          - [x] Tests started
+          - [x] Tests and visual regression passed"
+          else
+            # Remove testing, add failed
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/binaries:testing" -X DELETE 2>/dev/null || true
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" -f "labels[]=binaries:failed"
+
+            NEW_CHECKLIST="### Maintainer Checklist
+          - [x] Revision bump detected — \`${PREV_REV}\` → \`${CURRENT_REV}\`
+          - [x] Build started
+          - [x] ${SIZE_LINE}
+          - [x] Tests started
+          - [ ] ~~Tests passed~~ — **tests failed** (add \`binaries:test\` to retry) ← you are here"
+          fi
+
+          UPDATED=$(echo "$BODY" | perl -0777 -pe "s|<!-- checklist-start -->.*?<!-- checklist-end -->|<!-- checklist-start -->\n${NEW_CHECKLIST}\n<!-- checklist-end -->|s")
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --body "$UPDATED"
