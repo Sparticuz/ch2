@@ -46,9 +46,9 @@ jobs:
         run: |
           CURRENT="${{ steps.labels.outputs.current }}"
 
-          # If binaries are already verified, don't regress on follow-up pushes
-          if echo "$CURRENT" | grep -qx 'binaries:verified'; then
-            echo "binaries:verified already present — skipping label update"
+          # If binaries are already available or verified, don't regress on follow-up pushes
+          if echo "$CURRENT" | grep -qxE 'binaries:(available|verified)'; then
+            echo "binaries already available or verified — skipping label update"
             exit 0
           fi
 
