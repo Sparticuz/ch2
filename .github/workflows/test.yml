@@ -236,6 +236,23 @@ jobs:
           aws s3 sync /tmp/screenshots/current/ "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" \
             --exclude "manifest.json"
 
+      - name: Update revision manifest with screenshot hashes
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          ARCH="${{ matrix.arch }}"
+          MANIFEST_S3="s3://${S3_BUCKET}/${REVISION}/manifest.json"
+          MANIFEST_TMP="/tmp/manifest-update.json"
+
+          aws s3 cp "$MANIFEST_S3" "$MANIFEST_TMP" 2>/dev/null || echo '{}' > "$MANIFEST_TMP"
+
+          # Merge screenshot hashes into arch.screenshots
+          jq --arg arch "$ARCH" --slurpfile vr /tmp/screenshots/current/manifest.json '
+            .[$arch] //= {} |
+            .[$arch].screenshots = ($vr[0] | to_entries | map({(.key): .value.hash}) | add)
+          ' "$MANIFEST_TMP" > "${MANIFEST_TMP}.new" && mv "${MANIFEST_TMP}.new" "$MANIFEST_TMP"
+
+          aws s3 cp "$MANIFEST_TMP" "$MANIFEST_S3"
+
       - name: Resolve baseline revision
         id: baseline
         run: |
@@ -352,6 +369,7 @@ jobs:
           HAS_BASELINE: ${{ steps.baseline.outputs.has_baseline }}
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
+          BASELINE_REV="${{ steps.baseline.outputs.revision }}"
           MANIFEST=$(cat /tmp/screenshots/current/manifest.json)
 
           # Parse URLs into env vars
@@ -364,9 +382,9 @@ jobs:
           WEBGL_HASH=$(echo "$MANIFEST" | jq -r '.webgl.hash')
 
           if [ "$HAS_BASELINE" = "true" ]; then
-            BASELINE_MANIFEST=$(cat /tmp/screenshots/baseline/manifest.json 2>/dev/null || echo '{}')
-            BASELINE_EXAMPLE_HASH=$(echo "$BASELINE_MANIFEST" | jq -r '.["example.com"].hash // "n/a"')
-            BASELINE_WEBGL_HASH=$(echo "$BASELINE_MANIFEST" | jq -r '.webgl.hash // "n/a"')
+            BASELINE_MANIFEST=$(aws s3 cp "s3://${S3_BUCKET}/${BASELINE_REV}/manifest.json" - 2>/dev/null || echo '{}')
+            BASELINE_EXAMPLE_HASH=$(echo "$BASELINE_MANIFEST" | jq -r ".${{ matrix.arch }}.screenshots[\"example.com\"] // \"n/a\"")
+            BASELINE_WEBGL_HASH=$(echo "$BASELINE_MANIFEST" | jq -r ".${{ matrix.arch }}.screenshots.webgl // \"n/a\"")
 
             # Determine status
             EXAMPLE_STATUS="Match"
@@ -394,7 +412,7 @@ jobs:
             cat > /tmp/screenshots/comment.md <<EOF
           ## Visual Regression (${{ matrix.arch }})
 
-          Baseline: \`master\` | Current revision: \`${REVISION}\`
+          Baseline revision: \`${BASELINE_REV}\` | Current revision: \`${REVISION}\`
 
           | Page | Baseline | Current | Diff |
           |------|----------|---------|------|
@@ -435,4 +453,15 @@ jobs:
           EOF
           fi
 
-          gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/comment.md
+          # Find existing VR comment for this arch and update it, or create new
+          MARKER="## Visual Regression (${{ matrix.arch }})"
+          EXISTING_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"${MARKER}\"))) | .id" \
+            | tail -1)
+
+          if [ -n "$EXISTING_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${EXISTING_ID}" \
+              -X PATCH -F "body=@/tmp/screenshots/comment.md"
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/screenshots/comment.md
+          fi

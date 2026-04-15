@@ -47,6 +47,47 @@ with open('$TMP_BUILD', 'w') as f:
     json.dump(data, f, indent=2)
 " && aws s3 cp "$TMP_BUILD" "$S3_BUILD"
 
+# Assemble manifest.json with artifact checksums
+S3_MANIFEST="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/manifest.json"
+MANIFEST_TMP="/tmp/manifest.json"
+
+# Download fonts to compute checksum
+aws s3 cp "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/fonts.tar.br" /tmp/fonts.tar.br || true
+
+# Download existing manifest (arm64-libs instance may have contributed)
+aws s3 cp "$S3_MANIFEST" "$MANIFEST_TMP" 2>/dev/null || echo '{}' > "$MANIFEST_TMP"
+
+python3 -c "
+import json, hashlib, os
+
+manifest_path = '$MANIFEST_TMP'
+if os.path.exists(manifest_path):
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+else:
+    manifest = {}
+
+manifest['revision'] = '${CHROMIUM_REVISION}'
+manifest['chrome_version'] = '${CHROME_VERSION}'
+manifest['built_at'] = '$TIMESTAMP'
+
+for arch in ['x64', 'arm64']:
+    path = f'/tmp/manifest-{arch}.json'
+    if os.path.exists(path):
+        with open(path) as f:
+            binaries = json.load(f)
+        manifest.setdefault(arch, {}).setdefault('binaries', {}).update(binaries)
+
+fonts_path = '/tmp/fonts.tar.br'
+if os.path.exists(fonts_path):
+    size = os.path.getsize(fonts_path)
+    sha = hashlib.sha256(open(fonts_path, 'rb').read()).hexdigest()
+    manifest['fonts'] = {'fonts.tar.br': {'size': size, 'sha256': sha}}
+
+with open(manifest_path, 'w') as f:
+    json.dump(manifest, f, indent=2)
+" && aws s3 cp "$MANIFEST_TMP" "$S3_MANIFEST"
+
 # Remove pending marker
 aws s3 rm "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/pending.json" || true
 

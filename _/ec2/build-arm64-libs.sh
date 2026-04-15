@@ -47,6 +47,24 @@ echo "Uploading arm64 al2023.tar.br to S3..."
 aws s3 cp /srv/lib/al2023.tar.br \
   "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64/al2023.tar.br"
 
+# Update manifest.json with arm64 al2023 checksum
+MANIFEST_S3="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/manifest.json"
+MANIFEST_TMP="/tmp/manifest.json"
+aws s3 cp "$MANIFEST_S3" "$MANIFEST_TMP" 2>/dev/null || echo '{}' > "$MANIFEST_TMP"
+
+python3 -c "
+import json, hashlib, os
+with open('$MANIFEST_TMP') as f:
+    data = json.load(f)
+path = '/srv/lib/al2023.tar.br'
+size = os.path.getsize(path)
+sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+data.setdefault('arm64', {}).setdefault('binaries', {})
+data['arm64']['binaries']['al2023.tar.br'] = {'size': size, 'sha256': sha}
+with open('$MANIFEST_TMP', 'w') as f:
+    json.dump(data, f, indent=2)
+" && aws s3 cp "$MANIFEST_TMP" "$MANIFEST_S3"
+
 # Upload a small completion marker for debugging
 cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64-libs-complete.json"
 {

@@ -40,17 +40,42 @@ jobs:
           gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels \
             -f "labels[]=binaries:available"
 
+          # Download manifest for artifact details
+          MANIFEST=$(aws s3 cp "s3://${S3_BUCKET}/${REVISION}/manifest.json" - 2>/dev/null || echo '{}')
+          CHROME_VERSION=$(echo "$MANIFEST" | jq -r '.chrome_version // "unknown"')
+
+          fmt() {
+            local BYTES
+            BYTES=$(echo "$MANIFEST" | jq -r ".$1.binaries[\"$2\"].size // 0")
+            if [ "$BYTES" -gt 0 ] 2>/dev/null; then
+              numfmt --to=iec-i --suffix=B "$BYTES"
+            else
+              echo "—"
+            fi
+          }
+          # fonts key is flat: .fonts["fonts.tar.br"].size
+          FONTS_BYTES=$(echo "$MANIFEST" | jq -r '.fonts["fonts.tar.br"].size // 0')
+          if [ "$FONTS_BYTES" -gt 0 ] 2>/dev/null; then
+            FONTS_SIZE=$(numfmt --to=iec-i --suffix=B "$FONTS_BYTES")
+          else
+            FONTS_SIZE="—"
+          fi
+
           # Comment on PR
           gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "## Build Complete
 
-          Chromium revision \`${REVISION}\` built successfully.
+          Chromium revision \`${REVISION}\` (Chrome ${CHROME_VERSION}) built successfully.
           Binaries are available in S3. Tests will run automatically.
 
-          | Architecture | Artifacts |
-          |---|---|
-          | x64 | chromium.br, swiftshader.tar.br, al2023.tar.br |
-          | arm64 | chromium.br, swiftshader.tar.br, al2023.tar.br |
-          | shared | fonts.tar.br |"
+          | Architecture | Artifact | Size |
+          |---|---|---|
+          | x64 | chromium.br | $(fmt x64 chromium.br) |
+          | x64 | swiftshader.tar.br | $(fmt x64 swiftshader.tar.br) |
+          | x64 | al2023.tar.br | $(fmt x64 al2023.tar.br) |
+          | arm64 | chromium.br | $(fmt arm64 chromium.br) |
+          | arm64 | swiftshader.tar.br | $(fmt arm64 swiftshader.tar.br) |
+          | arm64 | al2023.tar.br | $(fmt arm64 al2023.tar.br) |
+          | shared | fonts.tar.br | ${FONTS_SIZE} |"
 
       - name: Handle failure
         if: steps.payload.outputs.status != 'success'
