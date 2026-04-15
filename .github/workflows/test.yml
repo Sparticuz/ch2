@@ -307,15 +307,6 @@ jobs:
           printf '%b' "$DIFF_RESULTS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Upload diff images to S3
-        if: steps.baseline.outputs.has_baseline == 'true'
-        run: |
-          REVISION="${{ steps.revision.outputs.revision }}"
-          if ls /tmp/screenshots/diff/*-diff.png 1>/dev/null 2>&1; then
-            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" \
-              --exclude "*" --include "*-diff.png"
-          fi
-
       - name: Upload images to GitHub
         id: urls
         run: |
@@ -369,20 +360,20 @@ jobs:
             SAFE="${PAGE//./_}"
 
             # Upload current screenshot
-            URL=$(upload_image "/tmp/screenshots/current/${PAGE}.png" "${PAGE}-current-${{ matrix.arch }}.png")
+            URL=$(upload_image "/tmp/screenshots/current/${PAGE}.png" "${PAGE}-current-${{ matrix.arch }}.png") || true
             if [ -n "$URL" ]; then
               URLS="${URLS}${SAFE}_current=${URL}\n"
             fi
 
             if [ "$HAS_BASELINE" = "true" ] && [ -n "$BASELINE_REV" ]; then
               # Upload baseline screenshot
-              URL=$(upload_image "/tmp/screenshots/baseline/${PAGE}.png" "${PAGE}-baseline-${{ matrix.arch }}.png")
+              URL=$(upload_image "/tmp/screenshots/baseline/${PAGE}.png" "${PAGE}-baseline-${{ matrix.arch }}.png") || true
               if [ -n "$URL" ]; then
                 URLS="${URLS}${SAFE}_baseline=${URL}\n"
               fi
 
               # Upload diff image if it exists
-              URL=$(upload_image "/tmp/screenshots/diff/${PAGE}-diff.png" "${PAGE}-diff-${{ matrix.arch }}.png")
+              URL=$(upload_image "/tmp/screenshots/diff/${PAGE}-diff.png" "${PAGE}-diff-${{ matrix.arch }}.png") || true
               if [ -n "$URL" ]; then
                 URLS="${URLS}${SAFE}_diff=${URL}\n"
               fi
