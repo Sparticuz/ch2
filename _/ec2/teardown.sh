@@ -14,16 +14,38 @@ sed -i "s/${GITHUB_PAT}/[REDACTED]/g" "$LOG" 2>/dev/null || true
 # Upload build log
 aws s3 cp "$LOG" "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.log" || true
 
-# Create completion marker
-cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/completed.json"
-{
-  "revision": "${CHROMIUM_REVISION}",
-  "chrome_version": "${CHROME_VERSION}",
-  "completed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "status": "success",
-  "pr_number": ${PR_NUMBER}
-}
-EOF
+# Finalize build.json with success status
+S3_BUILD="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.json"
+TMP_BUILD="/tmp/build.json"
+TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+NOW_EPOCH=$(date +%s)
+ELAPSED=$(( NOW_EPOCH - BUILD_START_EPOCH ))
+HOURS=$(( ELAPSED / 3600 ))
+MINS=$(( (ELAPSED % 3600) / 60 ))
+
+aws s3 cp "$S3_BUILD" "$TMP_BUILD" 2>/dev/null || echo '{}' > "$TMP_BUILD"
+
+python3 -c "
+import json
+with open('$TMP_BUILD') as f:
+    data = json.load(f)
+data.setdefault('revision', '${CHROMIUM_REVISION}')
+data.setdefault('pr_number', ${PR_NUMBER})
+data.setdefault('started_at', '$TIMESTAMP')
+data['status'] = 'success'
+data['chrome_version'] = '${CHROME_VERSION}'
+data.setdefault('events', [])
+data['events'].append({
+    'phase': 'completed',
+    'detail': 'Build successful',
+    'timestamp': '$TIMESTAMP',
+    'elapsed': '${HOURS}h${MINS}m',
+    'status': 'success',
+    'chrome_version': '${CHROME_VERSION}'
+})
+with open('$TMP_BUILD', 'w') as f:
+    json.dump(data, f, indent=2)
+" && aws s3 cp "$TMP_BUILD" "$S3_BUILD"
 
 # Remove pending marker
 aws s3 rm "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/pending.json" || true

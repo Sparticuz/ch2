@@ -11,7 +11,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 async function fetchStableChannelInfo() {
-  // eslint-disable-next-line n/no-unsupported-features/node-builtins
   const result = await fetch(
     "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json",
   );

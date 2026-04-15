@@ -42,7 +42,8 @@ for VAR in CHROMIUM_REVISION S3_BUCKET GITHUB_PAT GITHUB_REPO PR_NUMBER AWS_DEFA
 done
 [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "FATAL: PR_NUMBER must be a number, got: ${PR_NUMBER}"; exit 1; }
 
-# Helper: upload progress marker to S3
+# Helper: append a progress event to build.json on S3.
+# First call creates the file with top-level metadata; subsequent calls append.
 report_progress() {
   local PHASE="$1"
   local DETAIL="${2:-}"
@@ -54,17 +55,33 @@ report_progress() {
 
   echo ">>> Progress: ${PHASE} (${HOURS}h${MINS}m elapsed)"
 
-  cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/progress.json" 2>/dev/null || true
-{
-  "revision": "${CHROMIUM_REVISION}",
-  "phase": "${PHASE}",
-  "detail": "${DETAIL}",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "elapsed_seconds": ${ELAPSED},
-  "elapsed_human": "${HOURS}h${MINS}m",
-  "pr_number": ${PR_NUMBER}
-}
-EOF
+  local S3_PATH="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.json"
+  local TMP="/tmp/build.json"
+  local TIMESTAMP
+  TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  # Download existing build.json, or start with empty structure
+  aws s3 cp "$S3_PATH" "$TMP" 2>/dev/null || echo '{}' > "$TMP"
+
+  # Append event and ensure top-level metadata via python3
+  python3 -c "
+import json, sys
+with open('$TMP') as f:
+    data = json.load(f)
+data.setdefault('revision', '${CHROMIUM_REVISION}')
+data.setdefault('pr_number', ${PR_NUMBER})
+data.setdefault('started_at', '$TIMESTAMP')
+data['status'] = 'in_progress'
+data.setdefault('events', [])
+data['events'].append({
+    'phase': '$PHASE',
+    'detail': '$DETAIL',
+    'timestamp': '$TIMESTAMP',
+    'elapsed': '${HOURS}h${MINS}m'
+})
+with open('$TMP', 'w') as f:
+    json.dump(data, f, indent=2)
+" && aws s3 cp "$TMP" "$S3_PATH" 2>/dev/null || true
 }
 
 # Helper: notify GitHub of failure and exit
@@ -74,16 +91,42 @@ notify_failure() {
   MESSAGE=$(printf '%s' "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' ' ')
   echo "FAILURE: ${MESSAGE}"
 
-  # Upload failure marker to S3
-  cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/completed.json"
-{
-  "revision": "${CHROMIUM_REVISION}",
-  "completed_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "status": "failed",
-  "error": "${MESSAGE}",
-  "pr_number": ${PR_NUMBER}
-}
-EOF
+  # Upload failure marker to build.json
+  local S3_PATH="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/build.json"
+  local TMP="/tmp/build.json"
+  local TIMESTAMP
+  TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local NOW_EPOCH
+  NOW_EPOCH=$(date +%s)
+  local ELAPSED=$(( NOW_EPOCH - BUILD_START_EPOCH ))
+  local HOURS=$(( ELAPSED / 3600 ))
+  local MINS=$(( (ELAPSED % 3600) / 60 ))
+
+  aws s3 cp "$S3_PATH" "$TMP" 2>/dev/null || echo '{}' > "$TMP"
+  printf '%s' "$MESSAGE" > /tmp/build_error_msg.txt
+
+  python3 -c "
+import json
+with open('/tmp/build_error_msg.txt') as f:
+    msg = f.read()
+with open('$TMP') as f:
+    data = json.load(f)
+data.setdefault('revision', '${CHROMIUM_REVISION}')
+data.setdefault('pr_number', ${PR_NUMBER})
+data.setdefault('started_at', '$TIMESTAMP')
+data['status'] = 'failed'
+data.setdefault('events', [])
+data['events'].append({
+    'phase': 'failed',
+    'detail': msg,
+    'timestamp': '$TIMESTAMP',
+    'elapsed': '${HOURS}h${MINS}m',
+    'status': 'failed',
+    'error': msg
+})
+with open('$TMP', 'w') as f:
+    json.dump(data, f, indent=2)
+" && aws s3 cp "$TMP" "$S3_PATH" || true
 
   # Remove pending marker
   aws s3 rm "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/pending.json" || true

@@ -8,11 +8,11 @@
 //   webgl.png         — screenshot of https://get.webgl.org (logo removed)
 //   manifest.json     — { "example.com": { hash: "..." }, "webgl": { hash: "..." } }
 
+import chromium from "@sparticuz/chromium";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
 
 const OUTPUT_DIR = process.argv[2];
 if (!OUTPUT_DIR) {
@@ -29,8 +29,8 @@ const pages = [
   },
   {
     name: "webgl",
-    url: "https://get.webgl.org",
     remove: "logo-container",
+    url: "https://get.webgl.org",
   },
 ];
 

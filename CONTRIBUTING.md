@@ -67,8 +67,7 @@ stores build artifacts, progress markers, and build logs organized by revision:
 ```
 REVISION/
   pending.json          # build-in-progress marker
-  completed.json        # final build status
-  progress.json         # phase-by-phase progress
+  build.json            # build status + progress timeline
   build.log             # full build log
   fonts.tar.br          # font archive
   x64/
@@ -406,11 +405,12 @@ re-adding `binaries:building`.
 **Without SSH** — check progress via S3:
 
 ```bash
-aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
+aws s3 cp s3://BUCKET/REVISION/build.json - | jq .
 ```
 
-The progress file updates at each build phase (setup, build-x64, build-arm64,
-teardown) with a timestamp and elapsed time.
+The build file accumulates events at each phase (setup, build-x64, build-arm64,
+teardown) with timestamps and elapsed time. The top-level `status` field shows
+the current state (`in_progress`, `success`, or `failed`).
 
 **With SSH** (requires `build:ssh` label):
 
@@ -492,7 +492,7 @@ interruptions are frequent, use the `build:on-demand` label.
 
 The safety net terminates instances past the 8-hour deadline. If a build
 legitimately needs more time (unlikely — typical builds are ~5 hours), the
-instance will be terminated. Check S3 for `progress.json` to see which phase it
+instance will be terminated. Check S3 for `build.json` to see which phase it
 was in, then retry.
 
 ### `pending.json` orphaned in S3

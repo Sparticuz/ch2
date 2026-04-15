@@ -47,7 +47,7 @@ screen -r build
 **Progress without SSH:**
 
 ```bash
-aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
+aws s3 cp s3://BUCKET/REVISION/build.json - | jq .
 ```
 
 ## Script Layout
@@ -59,7 +59,7 @@ aws s3 cp s3://BUCKET/REVISION/progress.json - | jq .
 | `build-x64.sh`        | gn gen, autoninja, strip, brotli, AL2023 libs, S3 upload for x64                |
 | `build-arm64.sh`      | sysroot, gn gen, autoninja, llvm-strip, brotli, S3 upload for arm64             |
 | `build-arm64-libs.sh` | Standalone script for arm64 AL2023 system lib packaging (runs on m8g.medium)    |
-| `teardown.sh`         | Log scrub+upload, completed.json, repository_dispatch, shutdown                 |
+| `teardown.sh`         | Log scrub+upload, build.json (success), repository_dispatch, shutdown           |
 | `args-x64.gn`         | Static GN build args for x64                                                    |
 | `args-arm64.gn`       | Static GN build args for arm64                                                  |
 | `patches/*.sed`       | sed scripts applied to Chromium source                                          |
@@ -184,11 +184,11 @@ aws iam add-role-to-instance-profile \
 
 **Where these permissions are used (on EC2):**
 
-| Permission        | Used by                                                                             | Purpose                                       |
-| ----------------- | ----------------------------------------------------------------------------------- | --------------------------------------------- |
-| `s3:PutObject`    | `build-x64.sh`, `build-arm64.sh`, `teardown.sh`, `build-chromium.sh` (failure path) | Upload artifacts, build log, `completed.json` |
-| `s3:DeleteObject` | `teardown.sh`, `build-chromium.sh` (failure path)                                   | Remove `pending.json`                         |
-| `s3:GetObject`    | (not currently used, but included for `aws s3 cp` read operations if needed)        | —                                             |
+| Permission        | Used by                                                                             | Purpose                                   |
+| ----------------- | ----------------------------------------------------------------------------------- | ----------------------------------------- |
+| `s3:PutObject`    | `build-x64.sh`, `build-arm64.sh`, `teardown.sh`, `build-chromium.sh` (failure path) | Upload artifacts, build log, `build.json` |
+| `s3:DeleteObject` | `teardown.sh`, `build-chromium.sh` (failure path)                                   | Remove `pending.json`                     |
+| `s3:GetObject`    | `build-chromium.sh` (report_progress), `teardown.sh`                                | Read-modify-write `build.json`            |
 
 ### GitHub Secrets
 

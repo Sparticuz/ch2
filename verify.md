@@ -141,9 +141,10 @@ instance has no SSH access — verify by checking S3 and the dispatch event.
 - [ ] Verify: Logging goes to `/var/log/chromium-build.log` via `tee`.
 - [ ] Verify: All 6 required env vars are validated (exits on empty).
 - [ ] Verify: `PR_NUMBER` is validated as numeric.
-- [ ] Verify: `notify_failure` helper is defined — uploads `completed.json`
-      with `status: "failed"`, scrubs `GITHUB_PAT` from log, uploads log to S3,
-      sends `repository_dispatch` with failure status, then shuts down.
+- [ ] Verify: `notify_failure` helper is defined — appends failure event to
+      `build.json` with `status: "failed"`, scrubs `GITHUB_PAT` from log,
+      uploads log to S3, sends `repository_dispatch` with failure status, then
+      shuts down.
 - [ ] Verify: ERR trap calls `notify_failure` with line number on any error.
 - [ ] Verify: It sources `setup.sh`, `build-x64.sh`, `build-arm64.sh`,
       `teardown.sh` in order.
@@ -200,8 +201,8 @@ instance has no SSH access — verify by checking S3 and the dispatch event.
       (if present).
 - [ ] Verify: `GITHUB_PAT` scrubbed from build log before upload.
 - [ ] Verify: Build log uploaded to `s3://{bucket}/{revision}/build.log`.
-- [ ] Verify: `completed.json` created with `status: "success"` and
-      `chrome_version`.
+- [ ] Verify: `build.json` updated with final success event and top-level
+      `status: "success"` and `chrome_version`.
 - [ ] Verify: `pending.json` removed from S3.
 - [ ] Verify: `repository_dispatch` event sent with type `build-complete`
       and payload `{ revision, pr_number, status: "success" }`.
@@ -220,7 +221,7 @@ s3://{bucket}/{revision}/
     swiftshader.tar.br
   fonts.tar.br            (if fonts were built)
   build.log
-  completed.json          ← status: success
+  build.json              ← status: success, events timeline
 ```
 
 ### 2.5 — build-complete.yml (triggered by repository_dispatch)
@@ -361,7 +362,7 @@ A PR that does NOT change `revision.txt` (e.g., docs fix, bug fix).
 - [ ] Verify: The ERR trap in `build-chromium.sh` fires and calls
       `notify_failure "Unexpected error on line $LINENO"`.
 - [ ] Verify `notify_failure` runs the full failure path:
-  - Uploads `completed.json` with `status: "failed"` and `error` message.
+  - Appends failure event to `build.json` with `status: "failed"` and `error` message.
   - Removes `pending.json` from S3.
   - Scrubs `GITHUB_PAT` from the build log with `sed`.
   - Uploads `build.log` to S3.
@@ -645,5 +646,5 @@ user-data bootstrap
     → source setup.sh        (NVMe, swap, sysctl, deps, depot_tools, gclient sync, patches)
     → source build-x64.sh    (gn gen, autoninja, strip, brotli, libs, S3 upload)
     → source build-arm64.sh  (sysroot, gn gen, autoninja, llvm-strip, brotli, S3 upload)
-    → source teardown.sh     (fonts, log scrub, log upload, completed.json, dispatch, shutdown)
+    → source teardown.sh     (fonts, log scrub, log upload, build.json, dispatch, shutdown)
 ```
