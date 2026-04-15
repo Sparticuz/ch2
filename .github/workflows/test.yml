@@ -193,8 +193,6 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
       S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
-      UPLOAD_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      REPO_ID: ${{ github.repository_id }}
 
     steps:
       - name: Checkout
@@ -307,80 +305,40 @@ jobs:
           printf '%b' "$DIFF_RESULTS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Upload images to GitHub
+      - name: Upload diff images to S3
+        if: steps.baseline.outputs.has_baseline == 'true'
+        run: |
+          REVISION="${{ steps.revision.outputs.revision }}"
+          if ls /tmp/screenshots/diff/*-diff.png 1>/dev/null 2>&1; then
+            aws s3 sync /tmp/screenshots/diff/ "s3://${S3_BUCKET}/${REVISION}/${{ matrix.arch }}/" \
+              --exclude "*" --include "*-diff.png"
+          fi
+
+      - name: Generate pre-signed URLs
         id: urls
         run: |
           REVISION="${{ steps.revision.outputs.revision }}"
           BASELINE_REV="${{ steps.baseline.outputs.revision }}"
           HAS_BASELINE="${{ steps.baseline.outputs.has_baseline }}"
+          ARCH="${{ matrix.arch }}"
           URLS=""
+          EXPIRES=604800  # 7 days
 
-          upload_image() {
-            local FILE="$1"
-            local NAME="$2"
-
-            if [ ! -f "$FILE" ]; then
-              return 1
-            fi
-
-            local FILE_SIZE CONTENT_TYPE POLICY HTTP_CODE UPLOAD_URL ASSET_HREF FORM_ARGS
-            FILE_SIZE=$(stat -c%s "$FILE")
-            CONTENT_TYPE="image/png"
-
-            # Step 1: Get upload policy
-            HTTP_CODE=$(curl -s -o /tmp/upload_response.json -w "%{http_code}" -X POST \
-              -H "Authorization: token ${UPLOAD_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "https://github.com/upload/policies/assets" \
-              -d "{\"name\":\"${NAME}\",\"size\":${FILE_SIZE},\"content_type\":\"${CONTENT_TYPE}\",\"repository_id\":${REPO_ID}}")
-
-            if [ "$HTTP_CODE" != "201" ]; then
-              echo "::warning::Upload policy failed for ${NAME} (HTTP ${HTTP_CODE}): $(cat /tmp/upload_response.json)" >&2
-              return 1
-            fi
-
-            POLICY=$(cat /tmp/upload_response.json)
-            UPLOAD_URL=$(echo "$POLICY" | jq -r '.upload_url')
-            ASSET_HREF=$(echo "$POLICY" | jq -r '.asset.href')
-
-            # Step 2: Upload file using pre-signed form fields
-            FORM_ARGS=""
-            for key in $(echo "$POLICY" | jq -r '.form | keys[]'); do
-              val=$(echo "$POLICY" | jq -r ".form[\"$key\"]")
-              FORM_ARGS="$FORM_ARGS -F $key=$val"
-            done
-
-            HTTP_CODE=$(eval curl -s -o /dev/null -w "%{http_code}" -X POST $FORM_ARGS -F "file=@${FILE};type=${CONTENT_TYPE}" "$UPLOAD_URL")
-
-            if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "201" ]; then
-              echo "::warning::File upload failed for ${NAME} (HTTP ${HTTP_CODE})" >&2
-              return 1
-            fi
-
-            echo "$ASSET_HREF"
+          presign() {
+            local S3_KEY="$1" VAR_NAME="$2"
+            URL=$(aws s3 presign "s3://${S3_BUCKET}/${S3_KEY}" --expires-in "$EXPIRES" 2>/dev/null) || return 1
+            URLS="${URLS}${VAR_NAME}=${URL}\n"
           }
 
           for PAGE in example.com webgl; do
             SAFE="${PAGE//./_}"
-
-            # Upload current screenshot
-            URL=$(upload_image "/tmp/screenshots/current/${PAGE}.png" "${PAGE}-current-${{ matrix.arch }}.png") || true
-            if [ -n "$URL" ]; then
-              URLS="${URLS}${SAFE}_current=${URL}\n"
-            fi
+            presign "${REVISION}/${ARCH}/${PAGE}.png" "${SAFE}_current" || true
 
             if [ "$HAS_BASELINE" = "true" ] && [ -n "$BASELINE_REV" ]; then
-              # Upload baseline screenshot
-              URL=$(upload_image "/tmp/screenshots/baseline/${PAGE}.png" "${PAGE}-baseline-${{ matrix.arch }}.png") || true
-              if [ -n "$URL" ]; then
-                URLS="${URLS}${SAFE}_baseline=${URL}\n"
-              fi
-
-              # Upload diff image if it exists
-              URL=$(upload_image "/tmp/screenshots/diff/${PAGE}-diff.png" "${PAGE}-diff-${{ matrix.arch }}.png") || true
-              if [ -n "$URL" ]; then
-                URLS="${URLS}${SAFE}_diff=${URL}\n"
+              presign "${BASELINE_REV}/${ARCH}/${PAGE}.png" "${SAFE}_baseline" || true
+              # Only presign diff if one was actually generated
+              if [ -f "/tmp/screenshots/diff/${PAGE}-diff.png" ]; then
+                presign "${REVISION}/${ARCH}/${PAGE}-diff.png" "${SAFE}_diff" || true
               fi
             fi
           done
