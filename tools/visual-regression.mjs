@@ -8,11 +8,15 @@
 //   webgl.png         — screenshot of https://get.webgl.org (logo removed)
 //   manifest.json     — { "example.com": { hash: "..." }, "webgl": { hash: "..." } }
 
-import chromium from "@sparticuz/chromium";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
+
+import { setupLambdaEnvironment } from "../build/esm/helper.js";
+import chromium from "../build/esm/index.js";
+import { inflate } from "../build/esm/lambdafs.js";
 
 const OUTPUT_DIR = process.argv[2];
 if (!OUTPUT_DIR) {
@@ -34,6 +38,11 @@ const pages = [
   },
 ];
 
+// Match the Lambda environment setup used by tests/chromium.test.ts
+process.env["FONTCONFIG_PATH"] = join(tmpdir(), "fonts");
+setupLambdaEnvironment(join(tmpdir(), "al2023", "lib"));
+await inflate(join("bin", "al2023.tar.br"));
+
 const browser = await puppeteer.launch({
   args: puppeteer.defaultArgs({
     args: chromium.args,
@@ -47,7 +56,7 @@ const browser = await puppeteer.launch({
     isMobile: false,
     width: 1920,
   },
-  executablePath: await chromium.executablePath(),
+  executablePath: await chromium.executablePath("./bin/"),
   headless: "shell",
 });
 
