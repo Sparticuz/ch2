@@ -224,6 +224,9 @@ jobs:
           npm ci
           npm install --no-save odiff-bin
 
+      - name: Build package
+        run: npm run build
+
       - name: Take screenshots
         run: node tools/visual-regression.mjs /tmp/screenshots/current
 
