@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/dw/@sparticuz/chromium?label=%40sparticuz%2Fchromium&style=for-the-badge)](https://www.npmjs.com/package/@sparticuz/chromium)
 [![npm](https://img.shields.io/npm/dw/@sparticuz/chromium-min?label=%40sparticuz%2Fchromium-min&style=for-the-badge)](https://www.npmjs.com/package/@sparticuz/chromium-min)
 [![GitHub Downloads](https://img.shields.io/github/downloads/Sparticuz/chromium/total?style=for-the-badge)](https://github.com/Sparticuz/chromium/releases)
-[![Donate](https://img.shields.io/badge/donate-paypal-orange.svg?style=for-the-badge)](https://paypal.me/sparticuz)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/Sparticuz?style=for-the-badge)](https://github.com/sponsors/Sparticuz)
 
 ## Chromium for Serverless Platforms
 
