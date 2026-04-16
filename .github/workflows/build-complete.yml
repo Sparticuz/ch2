@@ -33,8 +33,27 @@ jobs:
           echo "status=${PAYLOAD_STATUS}" >> "$GITHUB_OUTPUT"
           echo "error=${PAYLOAD_ERROR}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
+          REVISION: ${{ steps.payload.outputs.revision }}
+        id: validate
+        run: |
+          # Verify PR exists and has binaries:building label
+          LABELS=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --jq '.[].name' 2>/dev/null || echo "")
+
+          if ! echo "$LABELS" | grep -q '^binaries:building$'; then
+            echo "::warning::Dispatch rejected — PR #${PR_NUMBER} does not have binaries:building label"
+            gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "⚠️ **Dispatch rejected:** Received \`build-complete\` for revision \`${REVISION}\`, but \`binaries:building\` label is not present. Ignoring." || true
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "valid=true" >> "$GITHUB_OUTPUT"
+
       - name: Handle success
-        if: steps.payload.outputs.status == 'success'
+        if: steps.payload.outputs.status == 'success' && steps.validate.outputs.valid == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
@@ -109,7 +128,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
 
       - name: Handle failure
-        if: steps.payload.outputs.status != 'success'
+        if: steps.payload.outputs.status != 'success' && steps.validate.outputs.valid == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
@@ -156,6 +175,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --body "$UPDATED"
 
       - name: Clean up S3 pending marker
+        if: steps.validate.outputs.valid == 'true'
         run: |
           REVISION="${{ steps.payload.outputs.revision }}"
           aws s3 rm "s3://${S3_BUCKET}/${REVISION}/pending.json" || true
