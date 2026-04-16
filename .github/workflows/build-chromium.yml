@@ -313,7 +313,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REVISION: ${{ steps.revision.outputs.revision }}
         run: |
-          DEADLINE=$(date -u -d "+8 hours" +"%Y-%m-%dT%H:%M:%SZ")
+          DEADLINE=$(date -u -d "+6 hours" +"%Y-%m-%dT%H:%M:%SZ")
           cat <<EOF > /tmp/pending.json
           {
             "revision": "${REVISION}",
@@ -455,7 +455,7 @@ jobs:
           | **Build instance** | \`${{ steps.ec2.outputs.instance_id }}\` (${X64_INSTANCE_TYPE}) |
           ${ARM64_ROW}| **Market** | ${MARKET_TYPE} |
           | **SSH** | ${SSH_STATUS} |
-          | **Deadline** | 8 hours from now |
+          | **Deadline** | 6 hours from now |
 
           The EC2 instances are running autonomously.
           Artifacts will be uploaded to S3, then this PR will be notified and instances will self-terminate."

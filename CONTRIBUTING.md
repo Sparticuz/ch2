@@ -69,6 +69,7 @@ REVISION/
   pending.json          # build-in-progress marker
   build.json            # build status + progress timeline
   build.log             # full build log
+  manifest.json         # artifact checksums and metadata
   fonts.tar.br          # font archive
   x64/
     chromium.br          # brotli-compressed headless_shell
@@ -280,17 +281,14 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `SSH_PUBLIC_KEY`           | Contents of `~/.ssh/chromium-build.pub`          |
 | `NPM_PUBLISH_TOKEN`        | npm granular access token for `@sparticuz` scope |
 
-**`RELEASE_TOKEN`** — a GitHub Personal Access Token used for three things:
+**`RELEASE_TOKEN`** — a GitHub Personal Access Token used for two things:
 
 1. `repository_dispatch` from EC2 to trigger `build-complete.yml`
-2. Adding labels in `build-complete.yml` (labels added by `GITHUB_TOKEN` don't
-   trigger downstream workflows; the PAT ensures `binaries:available` triggers
-   the test workflows)
-3. Tag push in `prepare-release.yml` to trigger `release.yml`
+2. Tag push in `prepare-release.yml` to trigger `release.yml`
 
-All require `contents:write` scope. For a **fine-grained PAT**, grant
-`contents:write` and `issues:write` on this repository only. For a **classic
-PAT**, the `repo` scope covers everything.
+Both require `contents:write` scope. For a **fine-grained PAT**, grant
+`contents:write` on this repository only. For a **classic PAT**, the `repo`
+scope covers everything.
 
 **`NPM_PUBLISH_TOKEN`** — create a granular access token on npmjs.com:
 
@@ -302,11 +300,17 @@ PAT**, the `repo` scope covers everything.
 The following labels must exist. Create them via `gh` CLI or the GitHub UI:
 
 ```bash
-# Build status labels
+# Build trigger labels (added by maintainer)
+gh label create "binaries:build"     --description "Trigger: start EC2 Chromium build"              --color "0E8A16"
+gh label create "binaries:test"      --description "Trigger: run tests against built binaries"      --color "0E8A16"
+
+# Build state labels (managed by workflows)
 gh label create "binaries:needed"    --description "Chromium binaries need to be built for this PR" --color "FBCA04"
 gh label create "binaries:building"  --description "Chromium build in progress"                     --color "ededed"
 gh label create "binaries:available" --description "Chromium binaries ready in S3"                  --color "1D76DB"
-gh label create "binaries:failed"    --description "Chromium build failed"                          --color "D93F0B"
+gh label create "binaries:testing"   --description "Tests running against built binaries"           --color "ededed"
+gh label create "binaries:verified"  --description "Binaries built and tests passed"                --color "0E8A16"
+gh label create "binaries:failed"    --description "Chromium build or tests failed"                 --color "D93F0B"
 
 # Build option labels
 gh label create "build:on-demand"    --description "Use on-demand EC2 pricing instead of spot"      --color "D93F0B"
@@ -345,10 +349,12 @@ a new stable Chromium version is available. To update manually:
 3. Edit or add patches in [`_/ec2/patches/`](_/ec2/patches/) if needed.
 4. Open a PR. The `check-pr-binaries` workflow detects the revision change and
    adds the `binaries:needed` label.
-5. When ready to build, manually add the `binaries:building` label. This triggers
-   the EC2 build.
-6. Wait for `binaries:available` label (build takes ~5 hours).
-7. Run `npm run test:source` and `npm run test:integration` to verify.
+5. When ready to build, manually add the `binaries:build` label. This triggers
+   the EC2 build (~5 hours). The workflow swaps it to `binaries:building`.
+6. Wait for `binaries:available` label (build complete).
+7. Add the `binaries:test` label to run tests. The workflow swaps it to
+   `binaries:testing`, and on success sets `binaries:verified`.
+8. Run `npm run test:source` and `npm run test:integration` to verify locally.
 
 > **Security note:** PRs that include binary files are not accepted. Binaries are
 > built by EC2 and stored in S3.
@@ -365,7 +371,7 @@ The build runs entirely on EC2, with no SSH or long-lived GitHub runner connecti
    `c8id.4xlarge` instance, comments on the PR, and exits (~2 minutes).
 4. In parallel, a small arm64 instance (`m8g.medium`) launches to package
    native AL2023 system libraries for arm64 (~5 minutes).
-5. The main EC2 instance boots, extracts the build scripts, schedules an 8-hour
+5. The main EC2 instance boots, extracts the build scripts, schedules a 6-hour
    self-destruct, and runs the build.
 6. Build scripts execute in order: `setup.sh` → `build-x64.sh` →
    `build-arm64.sh` → `teardown.sh`.
@@ -375,17 +381,22 @@ The build runs entirely on EC2, with no SSH or long-lived GitHub runner connecti
 
 ### Label Lifecycle
 
-| State                 | Label                | Set by                                   |
-| --------------------- | -------------------- | ---------------------------------------- |
-| New revision detected | `binaries:needed`    | `check-pr-binaries` (automated)          |
-| Human approves build  | `binaries:building`  | Maintainer (manual) — triggers the build |
-| Build succeeds        | `binaries:available` | `build-complete` (automated)             |
-| Build fails           | `binaries:failed`    | `build-complete` or `build-safety-net`   |
-| Retry after failure   | `binaries:building`  | Maintainer (manual)                      |
+| State                 | Label                | Set by                                 |
+| --------------------- | -------------------- | -------------------------------------- |
+| New revision detected | `binaries:needed`    | `check-pr-binaries` (automated)        |
+| Human approves build  | `binaries:build`     | Maintainer (manual) — trigger label    |
+| Build running         | `binaries:building`  | `build-chromium` (swaps from `build`)  |
+| Build succeeds        | `binaries:available` | `build-complete` (automated)           |
+| Build fails           | `binaries:failed`    | `build-complete` or `build-safety-net` |
+| Human approves tests  | `binaries:test`      | Maintainer (manual) — trigger label    |
+| Tests running         | `binaries:testing`   | `test` (swaps from `test`)             |
+| Tests pass            | `binaries:verified`  | `test` (automated, final state)        |
+| Retry after failure   | `binaries:build`     | Maintainer (manual)                    |
 
-The `binaries:building` label must always be added by a human. This is a security
-gate — automated workflows use `GITHUB_TOKEN` which cannot trigger other workflows,
-and builds should require explicit maintainer approval.
+Trigger labels (`binaries:build`, `binaries:test`) are always added manually by
+a maintainer. Workflows immediately swap them to state labels (`binaries:building`,
+`binaries:testing`). This is a security gate — it ensures builds and tests require
+explicit human approval.
 
 ### Build Options
 
@@ -428,7 +439,7 @@ Detach from screen with `Ctrl-A D` without interrupting the build.
 ### Safety Net
 
 The `build-safety-net.yml` workflow runs daily at 12:00 UTC. It scans S3 for
-`pending.json` markers past their 8-hour deadline, terminates any orphaned EC2
+`pending.json` markers past their 6-hour deadline, terminates any orphaned EC2
 instances, cleans up S3 markers, labels the PR as `binaries:failed`, and opens a
 GitHub issue documenting what happened.
 
@@ -485,12 +496,12 @@ aws ec2 describe-instance-type-offerings \
 
 Spot instances can be reclaimed with 2 minutes notice. The build will fail, and
 the safety net will detect the stale `pending.json` and label the PR as
-`binaries:failed`. Retry by adding `binaries:building` again. If spot
+`binaries:failed`. Retry by adding `binaries:build` again. If spot
 interruptions are frequent, use the `build:on-demand` label.
 
 ### Build marked as stale by safety net but still running
 
-The safety net terminates instances past the 8-hour deadline. If a build
+The safety net terminates instances past the 6-hour deadline. If a build
 legitimately needs more time (unlikely — typical builds are ~5 hours), the
 instance will be terminated. Check S3 for `build.json` to see which phase it
 was in, then retry.
@@ -508,13 +519,13 @@ aws s3 rm s3://BUCKET/REVISION/pending.json
 ### Labels added by workflow don't trigger builds
 
 This is by design. GitHub does not trigger workflows from label events caused by
-`GITHUB_TOKEN` (prevents infinite loops). Labels managed by `check-pr-binaries`
-are cosmetic — for maintainer visibility only. The test workflow self-determines
-whether to run by checking if `revision.txt` changed in the PR.
+`GITHUB_TOKEN` (prevents infinite loops). State labels like `binaries:building`
+and `binaries:available` are set by workflows using `GITHUB_TOKEN` and serve as
+visual status indicators only — they do not trigger other workflows.
 
-The `binaries:building` label must always be added manually by a maintainer.
-After a build completes, `build-complete.yml` adds `binaries:available` using
-`RELEASE_TOKEN` (a PAT), which does trigger the test workflow.
+The trigger labels (`binaries:build`, `binaries:test`) must always be added
+manually by a maintainer. After a build completes, the maintainer adds
+`binaries:test` to trigger the test workflow.
 
 ### Workflows not visible on Actions tab
 

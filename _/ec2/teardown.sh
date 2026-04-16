@@ -112,6 +112,6 @@ curl -sf -X POST \
 
 echo "=== Build Complete at $(date -u) ==="
 
-# Cancel the 8-hour safety timer; shut down now
+# Cancel the 6-hour safety timer; shut down now
 shutdown -c || true
 shutdown -h now

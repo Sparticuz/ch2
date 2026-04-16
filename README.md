@@ -472,8 +472,9 @@ SSH key generation, GitHub configuration, and the build/release process.
 
 1. Run `npm run update` to fetch the latest revision into [`_/ec2/revision.txt`](_/ec2/revision.txt).
 2. Open a PR — the `binaries:needed` label is added automatically.
-3. Add the `binaries:building` label to start the EC2 build (~5 hours).
-4. See [CONTRIBUTING.md](CONTRIBUTING.md#build-system) for build options and monitoring.
+3. Add the `binaries:build` label to start the EC2 build (~5 hours).
+4. After `binaries:available` appears, add the `binaries:test` label to run tests.
+5. See [CONTRIBUTING.md](CONTRIBUTING.md#build-system) for build options and monitoring.
 
 > **Note:** PRs with binary files are not accepted. Binaries are built by EC2 and stored in S3.
 

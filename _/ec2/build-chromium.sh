@@ -21,9 +21,9 @@ export HOME="${HOME:-/root}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # === Self-destruct timer ===
-# Schedule shutdown in 8 hours as the VERY FIRST action.
+# Schedule shutdown in 6 hours as the VERY FIRST action.
 # instance_initiated_shutdown_behavior=terminate ensures the instance is terminated.
-shutdown -h +480 "Build safety timeout reached (8 hours)"
+shutdown -h +360 "Build safety timeout reached (6 hours)"
 
 LOG="/var/log/chromium-build.log"
 BUILD_START_EPOCH=$(date +%s)
@@ -143,7 +143,7 @@ notify_failure() {
       }
     }" || true
 
-  # Cancel the 8-hour shutdown timer; shut down now
+  # Cancel the 6-hour shutdown timer; shut down now
   shutdown -c || true
   shutdown -h now
   exit 1

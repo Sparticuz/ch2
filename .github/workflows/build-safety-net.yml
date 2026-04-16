@@ -85,10 +85,10 @@ jobs:
 
                 gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "## Build Timed Out
 
-          Chromium build for revision \`${REVISION}\` exceeded its 8-hour deadline.
+          Chromium build for revision \`${REVISION}\` exceeded its deadline.
           EC2 instances have been terminated. The \`binaries:failed\` label has been applied.
 
-          To retry, remove the \`binaries:failed\` label and re-add \`binaries:building\`."
+          To retry, add the \`binaries:build\` label."
               fi
             fi
           done <<< "$PENDING_FILES"
@@ -110,7 +110,7 @@ jobs:
             --title "Build safety net: stale builds detected" \
             --body "## Build Timeout Alert
 
-          The following revision(s) had pending builds that exceeded the 8-hour deadline:
+          The following revision(s) had pending builds that exceeded their deadline:
           \`${{ steps.scan.outputs.revisions }}\`
 
           ### Actions Taken
