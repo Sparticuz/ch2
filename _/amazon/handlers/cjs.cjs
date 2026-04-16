@@ -1,3 +1,5 @@
+/* eslint-disable no-undef */
+/* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable sonarjs/no-commented-code */
 const chromium = require("@sparticuz/chromium");
 const { ok } = require("node:assert");
@@ -56,7 +58,7 @@ exports.handler = async (
               true
             ) {
               await page.evaluate((selector) => {
-                // eslint-disable-next-line unicorn/prefer-query-selector, no-undef
+                // eslint-disable-next-line unicorn/prefer-query-selector
                 document.getElementById(selector)?.remove();
               }, job.expected.remove);
             }

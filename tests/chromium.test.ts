@@ -12,9 +12,9 @@ import {
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pack } from "tar-fs";
 import { brotliCompressSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
+import { pack } from "tar-fs";
 import {
   afterAll,
   afterEach,
@@ -123,7 +123,7 @@ describe("Helper", () => {
           server.listen(0, "127.0.0.1", () => {
             const addr = server.address();
             if (addr && typeof addr !== "string") {
-              baseUrl = `http://127.0.0.1:${addr.port}`;
+              baseUrl = `http://127.0.0.1:${String(addr.port)}`;
             }
             resolve();
           });
@@ -133,7 +133,9 @@ describe("Helper", () => {
     afterAll(
       () =>
         new Promise<void>((resolve) => {
-          server.close(() => resolve());
+          server.close(() => {
+            resolve();
+          });
         }),
     );
 
@@ -225,6 +227,7 @@ describe("Helper", () => {
     it("should return true for localhost HTTP URLs (development)", () => {
       expect(isValidUrl("http://localhost:3000")).toBe(true);
       expect(isValidUrl("http://127.0.0.1:8080/pack.tar")).toBe(true);
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
       expect(isValidUrl("http://[::1]:3000")).toBe(true);
     });
 
@@ -305,7 +308,6 @@ describe("Helper", () => {
       // Create test fixture files that are real brotli-compressed content
       // so the inflate tests can decompress them
       const { mkdirSync } = await import("node:fs");
-      const { execSync: exec } = await import("node:child_process");
       const fixtureDir = join(tmpdir(), "tar-test-fixtures");
       mkdirSync(fixtureDir, { recursive: true });
 
@@ -320,6 +322,7 @@ describe("Helper", () => {
       const awsDir = join(tmpdir(), "tar-test-aws");
       mkdirSync(awsDir, { recursive: true });
       writeFileSync(join(awsDir, "fonts.conf"), "<fontconfig></fontconfig>");
+      // eslint-disable-next-line sonarjs/os-command
       const awsTar = execSync(`tar cf - -C "${awsDir}" fonts.conf`);
       writeFileSync(join(fixtureDir, "aws.tar.br"), brotliCompressSync(awsTar));
 
@@ -336,6 +339,7 @@ describe("Helper", () => {
       for (const lib of swLibs) {
         writeFileSync(join(swDir, lib), `fake ${lib}`);
       }
+      // eslint-disable-next-line sonarjs/os-command
       const swTar = execSync(`tar cf - -C "${swDir}" ${swLibs.join(" ")}`);
       writeFileSync(
         join(fixtureDir, "swiftshader.tar.br"),
@@ -356,7 +360,7 @@ describe("Helper", () => {
         tarServer.listen(0, "127.0.0.1", () => {
           const addr = tarServer.address();
           if (addr && typeof addr !== "string") {
-            tarServerUrl = `http://127.0.0.1:${addr.port}`;
+            tarServerUrl = `http://127.0.0.1:${String(addr.port)}`;
           }
           resolve();
         });
@@ -366,7 +370,9 @@ describe("Helper", () => {
     afterAll(
       () =>
         new Promise<void>((resolve) => {
-          tarServer.close(() => resolve());
+          tarServer.close(() => {
+            resolve();
+          });
           for (const dir of [
             "tar-test-fixtures",
             "tar-test-aws",

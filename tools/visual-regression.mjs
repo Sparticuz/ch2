@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+/* eslint-disable n/no-missing-import */
 // tools/visual-regression.mjs
 // Takes screenshots of test pages using the packaged Chromium binary.
 // Usage: node tools/visual-regression.mjs <output-dir>
@@ -21,6 +21,7 @@ import { inflate } from "../build/esm/lambdafs.js";
 const OUTPUT_DIR = process.argv[2];
 if (!OUTPUT_DIR) {
   console.error("Usage: node tools/visual-regression.mjs <output-dir>");
+  // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
   process.exit(1);
 }
 
@@ -70,7 +71,8 @@ for (const job of pages) {
 
   if (job.remove) {
     await page.evaluate((selector) => {
-      document.getElementById(selector)?.remove();
+      // eslint-disable-next-line no-undef
+      document.querySelector(`#${selector}`)?.remove();
     }, job.remove);
   }
 

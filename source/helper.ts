@@ -27,7 +27,7 @@ export const downloadFile = async (
   const response = await fetch(url, { redirect: "follow" });
 
   if (!response.ok) {
-    throw new Error(`Unexpected status code: ${response.status}.`);
+    throw new Error(`Unexpected status code: ${String(response.status)}.`);
   }
 
   if (!response.body) {
@@ -130,7 +130,7 @@ export const downloadAndExtract = async (url: string): Promise<string> => {
   });
 
   if (!response.ok) {
-    throw new Error(`Unexpected status code: ${response.status}.`);
+    throw new Error(`Unexpected status code: ${String(response.status)}.`);
   }
 
   if (!response.body) {
@@ -144,12 +144,14 @@ export const downloadAndExtract = async (url: string): Promise<string> => {
       ),
       extract(destDir),
     );
-  } catch (err) {
+  } catch (error) {
     // Clean up partial extraction on failure
     await new Promise<void>((resolve) => {
-      rm(destDir, { force: true, recursive: true }, () => resolve());
+      rm(destDir, { force: true, recursive: true }, () => {
+        resolve();
+      });
     });
-    throw err;
+    throw error;
   }
 
   return destDir;
