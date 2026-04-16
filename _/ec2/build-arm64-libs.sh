@@ -52,18 +52,13 @@ MANIFEST_S3="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/manifest.json"
 MANIFEST_TMP="/tmp/manifest.json"
 aws s3 cp "$MANIFEST_S3" "$MANIFEST_TMP" 2>/dev/null || echo '{}' > "$MANIFEST_TMP"
 
-python3 -c "
-import json, hashlib, os
-with open('$MANIFEST_TMP') as f:
-    data = json.load(f)
-path = '/srv/lib/al2023.tar.br'
-size = os.path.getsize(path)
-sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
-data.setdefault('arm64', {}).setdefault('binaries', {})
-data['arm64']['binaries']['al2023.tar.br'] = {'size': size, 'sha256': sha}
-with open('$MANIFEST_TMP', 'w') as f:
-    json.dump(data, f, indent=2)
-" && aws s3 cp "$MANIFEST_TMP" "$MANIFEST_S3"
+AL2023_PATH="/srv/lib/al2023.tar.br"
+AL2023_SIZE=$(stat -c%s "$AL2023_PATH")
+AL2023_SHA=$(sha256sum "$AL2023_PATH" | cut -d' ' -f1)
+
+jq --arg size "$AL2023_SIZE" --arg sha "$AL2023_SHA" \
+  '(.arm64 //= {}) | (.arm64.binaries //= {}) | .arm64.binaries["al2023.tar.br"] = {size: ($size | tonumber), sha256: $sha}' \
+  "$MANIFEST_TMP" > "${MANIFEST_TMP}.tmp" && mv "${MANIFEST_TMP}.tmp" "$MANIFEST_TMP" && aws s3 cp "$MANIFEST_TMP" "$MANIFEST_S3"
 
 # Upload a small completion marker for debugging
 cat <<EOF | aws s3 cp - "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/arm64-libs-complete.json"

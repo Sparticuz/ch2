@@ -25,27 +25,29 @@ MINS=$(( (ELAPSED % 3600) / 60 ))
 
 aws s3 cp "$S3_BUILD" "$TMP_BUILD" 2>/dev/null || echo '{}' > "$TMP_BUILD"
 
-python3 -c "
-import json
-with open('$TMP_BUILD') as f:
-    data = json.load(f)
-data.setdefault('revision', '${CHROMIUM_REVISION}')
-data.setdefault('pr_number', ${PR_NUMBER})
-data.setdefault('started_at', '$TIMESTAMP')
-data['status'] = 'success'
-data['chrome_version'] = '${CHROME_VERSION}'
-data.setdefault('events', [])
-data['events'].append({
-    'phase': 'completed',
-    'detail': 'Build successful',
-    'timestamp': '$TIMESTAMP',
-    'elapsed': '${HOURS}h${MINS}m',
-    'status': 'success',
-    'chrome_version': '${CHROME_VERSION}'
-})
-with open('$TMP_BUILD', 'w') as f:
-    json.dump(data, f, indent=2)
-" && aws s3 cp "$TMP_BUILD" "$S3_BUILD"
+jq \
+  --arg rev "$CHROMIUM_REVISION" \
+  --argjson pr "$PR_NUMBER" \
+  --arg ts "$TIMESTAMP" \
+  --arg cv "$CHROME_VERSION" \
+  --arg elapsed "${HOURS}h${MINS}m" \
+  '
+  .revision //= $rev |
+  .pr_number //= $pr |
+  .started_at //= $ts |
+  .status = "success" |
+  .chrome_version = $cv |
+  .events //= [] |
+  .events += [{
+    phase: "completed",
+    detail: "Build successful",
+    timestamp: $ts,
+    elapsed: $elapsed,
+    status: "success",
+    chrome_version: $cv
+  }]
+  ' "$TMP_BUILD" > "${TMP_BUILD}.tmp" && mv "${TMP_BUILD}.tmp" "$TMP_BUILD" \
+  && aws s3 cp "$TMP_BUILD" "$S3_BUILD"
 
 # Assemble manifest.json with artifact checksums
 S3_MANIFEST="s3://${S3_BUCKET}/${CHROMIUM_REVISION}/manifest.json"
@@ -57,36 +59,38 @@ aws s3 cp "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/fonts.tar.br" /tmp/fonts.tar.b
 # Download existing manifest (arm64-libs instance may have contributed)
 aws s3 cp "$S3_MANIFEST" "$MANIFEST_TMP" 2>/dev/null || echo '{}' > "$MANIFEST_TMP"
 
-python3 -c "
-import json, hashlib, os
+# Merge per-arch binaries into manifest
+for arch in x64 arm64; do
+  arch_file="/tmp/manifest-${arch}.json"
+  if [ -f "$arch_file" ]; then
+    jq \
+      --arg arch "$arch" \
+      --slurpfile bins "$arch_file" \
+      '.[$arch].binaries = ((.[$arch].binaries // {}) + $bins[0])' \
+      "$MANIFEST_TMP" > "${MANIFEST_TMP}.tmp" && mv "${MANIFEST_TMP}.tmp" "$MANIFEST_TMP"
+  fi
+done
 
-manifest_path = '$MANIFEST_TMP'
-if os.path.exists(manifest_path):
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-else:
-    manifest = {}
+# Compute fonts checksum and add to manifest
+fonts_path="/tmp/fonts.tar.br"
+if [ -f "$fonts_path" ]; then
+  fonts_size=$(stat -c%s "$fonts_path")
+  fonts_sha=$(sha256sum "$fonts_path" | cut -d' ' -f1)
+  jq \
+    --argjson size "$fonts_size" \
+    --arg sha "$fonts_sha" \
+    '.fonts = {"fonts.tar.br": {size: $size, sha256: $sha}}' \
+    "$MANIFEST_TMP" > "${MANIFEST_TMP}.tmp" && mv "${MANIFEST_TMP}.tmp" "$MANIFEST_TMP"
+fi
 
-manifest['revision'] = '${CHROMIUM_REVISION}'
-manifest['chrome_version'] = '${CHROME_VERSION}'
-manifest['built_at'] = '$TIMESTAMP'
-
-for arch in ['x64', 'arm64']:
-    path = f'/tmp/manifest-{arch}.json'
-    if os.path.exists(path):
-        with open(path) as f:
-            binaries = json.load(f)
-        manifest.setdefault(arch, {}).setdefault('binaries', {}).update(binaries)
-
-fonts_path = '/tmp/fonts.tar.br'
-if os.path.exists(fonts_path):
-    size = os.path.getsize(fonts_path)
-    sha = hashlib.sha256(open(fonts_path, 'rb').read()).hexdigest()
-    manifest['fonts'] = {'fonts.tar.br': {'size': size, 'sha256': sha}}
-
-with open(manifest_path, 'w') as f:
-    json.dump(manifest, f, indent=2)
-" && aws s3 cp "$MANIFEST_TMP" "$S3_MANIFEST"
+# Set top-level metadata
+jq \
+  --arg rev "$CHROMIUM_REVISION" \
+  --arg cv "$CHROME_VERSION" \
+  --arg ts "$TIMESTAMP" \
+  '.revision = $rev | .chrome_version = $cv | .built_at = $ts' \
+  "$MANIFEST_TMP" > "${MANIFEST_TMP}.tmp" && mv "${MANIFEST_TMP}.tmp" "$MANIFEST_TMP" \
+  && aws s3 cp "$MANIFEST_TMP" "$S3_MANIFEST"
 
 # Remove pending marker
 aws s3 rm "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/pending.json" || true

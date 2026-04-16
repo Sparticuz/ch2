@@ -43,20 +43,20 @@ aws s3 cp /srv/lib/al2023.tar.br \
   "s3://${S3_BUCKET}/${CHROMIUM_REVISION}/x64/al2023.tar.br"
 
 # Compute artifact checksums for manifest
-python3 -c "
-import json, hashlib, os
-artifacts = {}
-for name, path in [
-    ('chromium.br', '/srv/build/chromium/chromium-${CHROME_VERSION}.br'),
-    ('swiftshader.tar.br', '/srv/build/chromium/swiftshader.tar.br'),
-    ('al2023.tar.br', '/srv/lib/al2023.tar.br'),
-]:
-    size = os.path.getsize(path)
-    sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
-    artifacts[name] = {'size': size, 'sha256': sha}
-with open('/tmp/manifest-x64.json', 'w') as f:
-    json.dump(artifacts, f)
-"
+artifact_entry() {
+  local FILE="$1"
+  local SIZE SHA
+  SIZE=$(stat -c%s "$FILE")
+  SHA=$(sha256sum "$FILE" | cut -d' ' -f1)
+  jq -n --arg size "$SIZE" --arg sha "$SHA" '{size: ($size | tonumber), sha256: $sha}'
+}
+
+jq -n \
+  --argjson chromium "$(artifact_entry "/srv/build/chromium/chromium-${CHROME_VERSION}.br")" \
+  --argjson swiftshader "$(artifact_entry /srv/build/chromium/swiftshader.tar.br)" \
+  --argjson al2023 "$(artifact_entry /srv/lib/al2023.tar.br)" \
+  '{"chromium.br": $chromium, "swiftshader.tar.br": $swiftshader, "al2023.tar.br": $al2023}' \
+  > /tmp/manifest-x64.json
 
 # Clean up x64 build artifacts to avoid filename collisions with arm64
 rm -f /srv/build/chromium/chromium-"${CHROME_VERSION}" \

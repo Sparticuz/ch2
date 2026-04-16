@@ -61,7 +61,7 @@ cp "$SCRIPT_DIR/.gclient" /srv/source/chromium/.gclient
 # Resolve git SHA from revision number
 echo "Resolving git SHA for revision ${CHROMIUM_REVISION}..."
 REVISION_JSON=$(curl -sf "https://cr-rev.appspot.com/_ah/api/crrev/v1/redirect/${CHROMIUM_REVISION}")
-GIT_SHA=$(echo "$REVISION_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
+GIT_SHA=$(echo "$REVISION_JSON" | jq -r '.git_sha')
 echo "Git SHA: ${GIT_SHA}"
 
 cd /srv/source/chromium || exit 1
