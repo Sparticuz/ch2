@@ -217,10 +217,21 @@ describe("Helper", () => {
   });
 
   describe("isValidUrl", () => {
-    it("should return true for valid URLs", () => {
+    it("should return true for valid HTTPS URLs", () => {
       expect(isValidUrl("https://example.com")).toBe(true);
+      expect(isValidUrl("https://example.com/path/to/pack.tar")).toBe(true);
+    });
+
+    it("should return true for localhost HTTP URLs (development)", () => {
       expect(isValidUrl("http://localhost:3000")).toBe(true);
-      expect(isValidUrl("ftp://ftp.example.com")).toBe(true);
+      expect(isValidUrl("http://127.0.0.1:8080/pack.tar")).toBe(true);
+      expect(isValidUrl("http://[::1]:3000")).toBe(true);
+    });
+
+    it("should return false for non-HTTPS URLs", () => {
+      expect(isValidUrl("http://example.com")).toBe(false);
+      expect(isValidUrl("ftp://ftp.example.com")).toBe(false);
+      expect(isValidUrl("file:///etc/passwd")).toBe(false);
     });
 
     it("should return false for invalid URLs", () => {
