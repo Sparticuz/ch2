@@ -23,6 +23,8 @@ jobs:
       S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
       INSTANCE_TYPE: c8id.4xlarge
       ARM64_INSTANCE_TYPE: m8g.medium
+      X64_AMI_SSM: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+      ARM64_AMI_SSM: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64
 
     steps:
       - name: Checkout
@@ -292,7 +294,7 @@ jobs:
         id: ami
         run: |
           AMI_ID=$(aws ssm get-parameters \
-            --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 \
+            --names "${X64_AMI_SSM}" \
             --query 'Parameters[0].Value' --output text)
           echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
           echo "AMI: ${AMI_ID}"
@@ -301,7 +303,7 @@ jobs:
         id: ami_arm64
         run: |
           AMI_ID=$(aws ssm get-parameters \
-            --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64 \
+            --names "${ARM64_AMI_SSM}" \
             --query 'Parameters[0].Value' --output text)
           echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
           echo "arm64 AMI: ${AMI_ID}"
