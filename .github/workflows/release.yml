@@ -39,8 +39,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
           S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+          REVISION: ${{ steps.revision.outputs.revision }}
         run: |
-          REVISION="${{ steps.revision.outputs.revision }}"
           mkdir -p bin/x64 bin/arm64
 
           # Download all binaries
@@ -55,6 +55,58 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Verify binary checksums
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          set -euo pipefail
+
+          # Download manifest (contains SHA-256 checksums from build time)
+          aws s3 cp "s3://${S3_BUCKET}/${REVISION}/manifest.json" /tmp/manifest.json
+
+          echo "Verifying binary checksums against manifest..."
+          FAILED=0
+
+          verify() {
+            local FILE="$1" JQ_PATH="$2"
+            if [ ! -f "$FILE" ]; then
+              echo "SKIP: $FILE not found"
+              return
+            fi
+            EXPECTED=$(jq -r "$JQ_PATH" /tmp/manifest.json)
+            if [ "$EXPECTED" = "null" ] || [ -z "$EXPECTED" ]; then
+              echo "WARN: No checksum in manifest for $FILE"
+              return
+            fi
+            ACTUAL=$(sha256sum "$FILE" | cut -d' ' -f1)
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "FAIL: $FILE"
+              echo "  expected: $EXPECTED"
+              echo "  actual:   $ACTUAL"
+              FAILED=1
+            else
+              echo "OK: $FILE ($ACTUAL)"
+            fi
+          }
+
+          verify bin/x64/chromium.br       '.x64.binaries["chromium.br"].sha256'
+          verify bin/x64/swiftshader.tar.br '.x64.binaries["swiftshader.tar.br"].sha256'
+          verify bin/x64/al2023.tar.br      '.x64.binaries["al2023.tar.br"].sha256'
+          verify bin/arm64/chromium.br       '.arm64.binaries["chromium.br"].sha256'
+          verify bin/arm64/swiftshader.tar.br '.arm64.binaries["swiftshader.tar.br"].sha256'
+          verify bin/arm64/al2023.tar.br     '.arm64.binaries["al2023.tar.br"].sha256'
+          verify bin/fonts.tar.br            '.fonts["fonts.tar.br"].sha256'
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Checksum verification failed — aborting release"
+            exit 1
+          fi
+          echo "All checksums verified successfully"
 
       - run: npm run build
 
