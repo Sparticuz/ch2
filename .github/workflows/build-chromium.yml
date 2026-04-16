@@ -21,9 +21,9 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
       S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
-      INSTANCE_TYPE: c8id.4xlarge
-      ARM64_INSTANCE_TYPE: m8g.medium
+      X64_INSTANCE_TYPE: c8id.4xlarge
       X64_AMI_SSM: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+      ARM64_INSTANCE_TYPE: m8g.medium
       ARM64_AMI_SSM: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64
 
     steps:
@@ -207,9 +207,9 @@ jobs:
           # Find AZs that support the requested instance type
           SUPPORTED_AZS=$(aws ec2 describe-instance-type-offerings \
             --location-type availability-zone \
-            --filters "Name=instance-type,Values=${INSTANCE_TYPE}" \
+            --filters "Name=instance-type,Values=${X64_INSTANCE_TYPE}" \
             --query 'InstanceTypeOfferings[].Location' --output json)
-          echo "AZs supporting ${INSTANCE_TYPE}: ${SUPPORTED_AZS}"
+          echo "AZs supporting ${X64_INSTANCE_TYPE}: ${SUPPORTED_AZS}"
 
           # Get all subnets in supported AZs (space-separated for iteration)
           SUBNET_IDS=$(aws ec2 describe-subnets \
@@ -219,7 +219,7 @@ jobs:
               '[.[] | select(.AZ as $az | $azs | index($az))] | .[].Id')
 
           if [ -z "$SUBNET_IDS" ]; then
-            echo "::error::No subnet found in an AZ that supports ${INSTANCE_TYPE}"
+            echo "::error::No subnet found in an AZ that supports ${X64_INSTANCE_TYPE}"
             exit 1
           fi
 
@@ -345,7 +345,7 @@ jobs:
             echo "Trying subnet ${SUBNET_ID}..."
             if INSTANCE_ID=$(aws ec2 run-instances \
               --image-id "${{ steps.ami.outputs.ami_id }}" \
-              --instance-type "${INSTANCE_TYPE}" \
+              --instance-type "${X64_INSTANCE_TYPE}" \
               --security-group-ids "${{ steps.sg.outputs.sg_id }}" \
               --subnet-id "${SUBNET_ID}" \
               --associate-public-ip-address \
@@ -452,12 +452,12 @@ jobs:
           | | Value |
           |---|---|
           | **Revision** | \`${{ steps.revision.outputs.revision }}\` |
-          | **Build instance** | \`${{ steps.ec2.outputs.instance_id }}\` (${INSTANCE_TYPE}) |
+          | **Build instance** | \`${{ steps.ec2.outputs.instance_id }}\` (${X64_INSTANCE_TYPE}) |
           ${ARM64_ROW}| **Market** | ${MARKET_TYPE} |
           | **SSH** | ${SSH_STATUS} |
           | **Deadline** | 8 hours from now |
 
-          The EC2 instances are running autonomously. No GitHub runner connection is needed.
+          The EC2 instances are running autonomously.
           Artifacts will be uploaded to S3, then this PR will be notified and instances will self-terminate."
 
       - name: Emergency teardown (on failure)
