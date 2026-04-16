@@ -22,6 +22,7 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       S3_BUCKET: ${{ secrets.CHROMIUM_BUILD_S3_BUCKET }}
       INSTANCE_TYPE: c8id.4xlarge
+      ARM64_INSTANCE_TYPE: m8g.medium
 
     steps:
       - name: Checkout
@@ -234,7 +235,7 @@ jobs:
           # m8g.medium is widely available but still check
           SUPPORTED_AZS=$(aws ec2 describe-instance-type-offerings \
             --location-type availability-zone \
-            --filters "Name=instance-type,Values=m8g.medium" \
+            --filters "Name=instance-type,Values=${ARM64_INSTANCE_TYPE}" \
             --query 'InstanceTypeOfferings[].Location' --output json)
 
           SUBNET_IDS=$(aws ec2 describe-subnets \
@@ -402,7 +403,7 @@ jobs:
             echo "Trying arm64 subnet ${SUBNET_ID}..."
             if INSTANCE_ID=$(aws ec2 run-instances \
               --image-id "${{ steps.ami_arm64.outputs.ami_id }}" \
-              --instance-type m8g.medium \
+              --instance-type "${ARM64_INSTANCE_TYPE}" \
               --security-group-ids "${{ steps.sg.outputs.sg_id }}" \
               --subnet-id "${SUBNET_ID}" \
               --associate-public-ip-address \
@@ -440,7 +441,7 @@ jobs:
           ARM64_INSTANCE="${{ steps.ec2_arm64.outputs.instance_id }}"
           ARM64_ROW=""
           if [ -n "$ARM64_INSTANCE" ]; then
-            ARM64_ROW="| **arm64 libs instance** | \`${ARM64_INSTANCE}\` (m8g.medium, ~5 min) |
+            ARM64_ROW="| **arm64 libs instance** | \`${ARM64_INSTANCE}\` (${ARM64_INSTANCE_TYPE}, ~5 min) |
           "
           fi
 
