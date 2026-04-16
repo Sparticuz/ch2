@@ -47,13 +47,23 @@ jobs:
 
       - name: Check if update is needed
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ steps.current.outputs.revision }}" = "${{ steps.latest.outputs.revision }}" ]; then
             echo "update_needed=false" >> "$GITHUB_OUTPUT"
             echo "Already up to date."
           else
-            echo "update_needed=true" >> "$GITHUB_OUTPUT"
-            echo "New revision available: ${{ steps.latest.outputs.revision }} (current: ${{ steps.current.outputs.revision }})"
+            # Check if a PR already exists for this revision
+            BRANCH="chore/chromium-update-${{ steps.latest.outputs.revision }}"
+            EXISTING=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+            if [ -n "$EXISTING" ]; then
+              echo "update_needed=false" >> "$GITHUB_OUTPUT"
+              echo "PR #${EXISTING} already exists for revision ${{ steps.latest.outputs.revision }} — skipping"
+            else
+              echo "update_needed=true" >> "$GITHUB_OUTPUT"
+              echo "New revision available: ${{ steps.latest.outputs.revision }} (current: ${{ steps.current.outputs.revision }})"
+            fi
           fi
 
       - name: Update revision
