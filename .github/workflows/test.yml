@@ -153,7 +153,7 @@ jobs:
           path: chromium.${{ matrix.arch }}.zip
 
   execute:
-    name: Lambda ${{ matrix.arch }} (Node ${{ matrix.version }}.x)
+    name: Lambda ${{ matrix.arch }} (${{ matrix.label }})
     needs: build
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -162,11 +162,23 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-        version: [22, 24]
+        function: [node22, node24]
         include:
           - arch: x64
             runner: ubuntu-latest
           - arch: arm64
+            runner: ubuntu-24.04-arm
+          - function: node22
+            label: Node 22.x ESM
+          - function: node24
+            label: Node 24.x ESM
+          - arch: x64
+            function: node24cjs
+            label: Node 24.x CJS
+            runner: ubuntu-latest
+          - arch: arm64
+            function: node24cjs
+            label: Node 24.x CJS
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
@@ -196,7 +208,9 @@ jobs:
         run: sed -i 's/x86_64/arm64/g' _/amazon/template.yml
 
       - name: Invoke Lambda on SAM
-        run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/example.com.json node${{ matrix.version }} 2>&1 | (grep 'Error' && exit 1 || exit 0)
+        env:
+          SAM_FUNCTION: ${{ matrix.function }}
+        run: sam local invoke --template _/amazon/template.yml --event _/amazon/events/example.com.json "$SAM_FUNCTION" 2>&1 | (grep 'Error' && exit 1 || exit 0)
 
   visual-regression:
     name: Visual Regression (${{ matrix.arch }})
